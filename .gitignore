@@ -1,0 +1,23 @@
+# ---- 虚拟环境 & 生成文件 ----
+.venv/
+out/
+
+# ---- Python 编译缓存 ----
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---- 工具/IDE 相关（按需保留）----
+.vscode/
+.idea/
+
+# ---- 常见 Python 工具缓存（用到再生效）----
+.mypy_cache/
+.pytest_cache/
+.coverage
+*.cover
+htmlcov/
+
+# ---- 其他杂项（按需）----
+*.log
+.DS_Store
