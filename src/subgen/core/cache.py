@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json
+
 import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -20,11 +20,33 @@ def file_sha1(path: Path, buf_size: int = 1024 * 1024) -> str:
 
 def make_asr_cache_key(
     audio_path: Path,
+    *,
     asr_model: str,
     language: str,
+    preprocess: Optional[str] = None,
+    asr_device: str = "auto",
+    asr_compute_type: Optional[str] = None,
+    asr_beam_size: int = 5,
+    asr_best_of: int = 5,
+    asr_vad_filter: bool = True,
 ) -> str:
+    """
+    Cache key must change when ANY factor that impacts ASR output changes.
+    """
     audio_hash = file_sha1(audio_path)
-    raw = f"{audio_hash}|{asr_model}|{language}"
+    raw = "|".join(
+        [
+            audio_hash,
+            f"model={asr_model}",
+            f"lang={language}",
+            f"pre={preprocess or 'none'}",
+            f"dev={asr_device}",
+            f"ct={asr_compute_type or 'auto'}",
+            f"beam={asr_beam_size}",
+            f"best_of={asr_best_of}",
+            f"vad={int(bool(asr_vad_filter))}",
+        ]
+    )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
