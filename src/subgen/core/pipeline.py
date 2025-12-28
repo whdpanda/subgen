@@ -7,6 +7,7 @@ from typing import Optional
 from subgen.core.audio.extract import extract_audio, AudioPreprocess
 from subgen.core.asr.local_whisper import LocalWhisperASR
 from subgen.core.align.noop import NoopAlign
+from subgen.core.postprocess.punct_split import split_segments_on_sentence_end_punct
 from subgen.core.translate.engine_nllb import NLLBTranslator
 from subgen.core.translate.engine_openai import OpenAITranslator
 from subgen.core.refine.glossary import load_glossary, apply_glossary
@@ -164,6 +165,13 @@ def run_pipeline(
         hard_max=hard_max,
         suspect_dur=suspect_dur,
         suspect_cps=suspect_cps,
+    )
+
+    segments = split_segments_on_sentence_end_punct(
+        words=list(transcript.words or []),
+        segments=segments,
+        min_seg=2.5,
+        hard_max=20.0,
     )
 
     # FINAL GUARD: coalesce tiny fragments

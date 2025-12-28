@@ -292,6 +292,15 @@ class LocalWhisperASR(ASRProvider):
                 except Exception:
                     pass
 
+    def _shift_words(self, words: List[Word], shift: float) -> List[Word]:
+        if not words or shift == 0.0:
+            return words
+        for w in words:
+            w.start = float(w.start) + float(shift)
+            w.end = float(w.end) + float(shift)
+        words.sort(key=lambda x: (float(x.start), float(x.end)))
+        return words
+
     def _transcribe_units_range(
         self,
         audio_path: Path,
@@ -320,12 +329,18 @@ class LocalWhisperASR(ASRProvider):
             condition_on_previous_text=condition_on_previous_text,
         )
 
-        words = _collect_words_from_fw_segments(fw_segments, shift=start)
-        if _words_are_reliable(words, fw_segments, float(end)):
-            return words
+        # IMPORTANT FIX:
+        # - fw_segments times are RELATIVE to the cut audio (0..range_dur)
+        # - do reliability checks in RELATIVE time, then shift to ABSOLUTE time at the end
+        range_dur = float(end) - float(start)
+
+        words_rel = _collect_words_from_fw_segments(fw_segments, shift=0.0)
+        if _words_are_reliable(words_rel, fw_segments, range_dur):
+            return self._shift_words(words_rel, float(start))
 
         logger.warning("Range word timestamps unreliable/holes -> fallback pseudo-words.")
-        return _collect_pseudo_words_from_fw_segments(fw_segments, shift=start)
+        pseudo_rel = _collect_pseudo_words_from_fw_segments(fw_segments, shift=0.0)
+        return self._shift_words(pseudo_rel, float(start))
 
     def transcribe_words_range(
         self,
@@ -374,4 +389,3 @@ class LocalWhisperASR(ASRProvider):
 
         # 3) return
         return Transcript(language=detected_lang, segments=segments, words=words)
-

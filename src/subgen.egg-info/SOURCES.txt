@@ -17,6 +17,8 @@ src/subgen/core/asr/local_whisper.py
 src/subgen/core/audio/extract.py
 src/subgen/core/export/srt.py
 src/subgen/core/postprocess/coalesce.py
+src/subgen/core/postprocess/dedupe.py
+src/subgen/core/postprocess/punct_split.py
 src/subgen/core/postprocess/repair.py
 src/subgen/core/refine/glossary.py
 src/subgen/core/refine/llm_openai.py

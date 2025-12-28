@@ -36,7 +36,7 @@ class RepairConfig:
 
     stuck_min_words: int = 12
     stuck_top1_ratio: float = 0.45
-    stuck_min_run: int = 8
+    stuck_min_run: int = 4  # CHANGED: 连续重复 >= 4 次即可判定卡死
 
     backtrack: float = 0.0
     lookahead: float = 1.5
@@ -100,30 +100,56 @@ def _has_replacement_char(text: str) -> bool:
 
 
 def _is_stuck_repetition(text: str, cfg: RepairConfig) -> bool:
+    """
+    卡死检测：
+    - 只要出现“同一 token 连续重复 >= 4 次”，就触发 relisten（短段也适用）
+    - 同时保留长文本 top1_ratio 的判定
+    """
     t = _norm_text(text)
     if not t:
         return False
+
     words = [w for w in t.split(" ") if w]
+    if not words:
+        return False
+
+    # 1) 连续重复检测（短段也适用）
+    run = 1
+    best = 1
+    for i in range(1, len(words)):
+        if words[i] == words[i - 1]:
+            run += 1
+            if run > best:
+                best = run
+        else:
+            run = 1
+
+    if best >= int(cfg.stuck_min_run):
+        return True
+
+    # 2) 短段“单词占比极高”兜底（避免非连续但几乎全是同一个词）
+    if len(words) >= 6:
+        freq: Dict[str, int] = {}
+        for w in words:
+            freq[w] = freq.get(w, 0) + 1
+        _top_word, top_cnt = max(freq.items(), key=lambda kv: kv[1])
+        top_ratio = top_cnt / max(1, len(words))
+        if top_cnt >= 6 and top_ratio >= 0.70:
+            return True
+
+    # 3) 原来的长文本 top1_ratio 逻辑（保留）
     if len(words) < cfg.stuck_min_words:
         return False
 
-    freq: Dict[str, int] = {}
+    freq2: Dict[str, int] = {}
     for w in words[:80]:
-        freq[w] = freq.get(w, 0) + 1
-    top1 = max(freq.values()) if freq else 0
+        freq2[w] = freq2.get(w, 0) + 1
+    top1 = max(freq2.values()) if freq2 else 0
     denom = max(1, min(len(words), 80))
     if (top1 / denom) >= cfg.stuck_top1_ratio:
         return True
 
-    run = 1
-    best = 1
-    for i in range(1, min(len(words), 120)):
-        if words[i] == words[i - 1]:
-            run += 1
-            best = max(best, run)
-        else:
-            run = 1
-    return best >= cfg.stuck_min_run
+    return False
 
 
 def _is_short_low_info(seg: Segment, cfg: RepairConfig) -> bool:
@@ -215,6 +241,20 @@ def _build_segments_from_units(units: List[Word], cfg: RepairConfig) -> List[Seg
     return segs
 
 
+def _clamp_segments_to_range(segs: List[Segment], start: float, end: float) -> List[Segment]:
+    out: List[Segment] = []
+    for s in segs:
+        s0 = max(float(s.start), float(start))
+        s1 = min(float(s.end), float(end))
+        if s1 <= s0:
+            continue
+        s.start = s0
+        s.end = s1
+        if (s.text or "").strip():
+            out.append(s)
+    return out
+
+
 def _replace_by_relisten(
     *,
     asr,
@@ -257,15 +297,24 @@ def _replace_by_relisten(
     if not new_segs:
         return segs, idx + 1
 
-    del_l = idx
-    while del_l > 0 and _overlaps(float(segs[del_l - 1].start), float(segs[del_l - 1].end), start, end):
-        del_l -= 1
-    del_r = idx
-    while del_r < len(segs) and _overlaps(float(segs[del_r].start), float(segs[del_r].end), start, end):
-        del_r += 1
+    new_segs = _clamp_segments_to_range(new_segs, start, end)
+    if not new_segs:
+        return segs, idx + 1
 
-    segs = segs[:del_l] + new_segs + segs[del_r:]
-    next_idx = del_l + len(new_segs)
+    left: List[Segment] = []
+    right: List[Segment] = []
+    for s in segs:
+        s0 = float(s.start)
+        s1 = float(s.end)
+        if s1 <= start:
+            left.append(s)
+        elif s0 >= end:
+            right.append(s)
+        else:
+            continue
+
+    segs = left + new_segs + right
+    next_idx = len(left) + len(new_segs)
     return segs, next_idx
 
 
@@ -286,6 +335,8 @@ def repair_transcript(
     if len(segs) < 2:
         return transcript
 
+    segs.sort(key=lambda s: (float(s.start), float(s.end)))
+
     if audio_end is None:
         audio_end = _wav_duration_seconds(audio_path)
     if audio_end is None:
@@ -302,11 +353,11 @@ def repair_transcript(
             i += 1
             continue
 
+        # “从上一段末尾重新听”：relisten_start = prev.end - backtrack（默认 backtrack=0）
         relisten_start = max(0.0, float(prev.end) - cfg.backtrack)
         next_seg = segs[i + 1] if (i + 1) < len(segs) else None
         next_start = float(next_seg.start) if next_seg is not None else float(cur.end)
         relisten_end = min(max(float(cur.end) + cfg.lookahead, next_start + 0.2), float(audio_end))
-
 
         key = (
             round(relisten_start / cfg.range_round) * cfg.range_round,

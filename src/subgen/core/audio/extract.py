@@ -23,6 +23,10 @@ def _run(cmd: list[str], *, env: Optional[dict[str, str]] = None) -> None:
     base_env = os.environ.copy()
     base_env["PYTHONUTF8"] = "1"
     base_env["PYTHONIOENCODING"] = "utf-8"
+    # Some tools also look at LANG/LC_ALL on Windows terminals
+    base_env.setdefault("LANG", "C.UTF-8")
+    base_env.setdefault("LC_ALL", "C.UTF-8")
+
     if env:
         base_env.update(env)
 
@@ -41,7 +45,7 @@ def _run(cmd: list[str], *, env: Optional[dict[str, str]] = None) -> None:
             logger.error(e.stdout)
         if e.stderr:
             logger.error(e.stderr)
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}") from e
 
 
 def _extract_wav(
@@ -51,6 +55,9 @@ def _extract_wav(
     sample_rate: int,
     ffmpeg_af: Optional[str] = None,
 ) -> Path:
+    """
+    Extract mono wav audio from video using ffmpeg.
+    """
     cmd = [
         "ffmpeg",
         "-y",
@@ -68,6 +75,28 @@ def _extract_wav(
     return out_wav
 
 
+def _apply_ffmpeg_filter(
+    *,
+    in_wav: Path,
+    out_wav: Path,
+    ffmpeg_af: str,
+) -> Path:
+    """
+    Apply ffmpeg audio filter chain to an existing wav file (e.g., vocals.wav).
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", str(in_wav),
+        "-af", ffmpeg_af,
+        "-f", "wav",
+        str(out_wav),
+    ]
+    logger.info(f"Applying speech filter -> {out_wav.name}")
+    _run(cmd)
+    return out_wav
+
+
 def _demucs_vocals(
     *,
     in_wav: Path,
@@ -78,10 +107,7 @@ def _demucs_vocals(
     Run demucs and return a vocals wav path.
     Windows-safe: avoid GBK UnicodeEncodeError by using ASCII temp filename + UTF-8 env.
     """
-    import os
-    import sys
     import shutil
-    import tempfile
 
     demucs_root = out_dir / "demucs"
     ensure_dir(demucs_root)
@@ -136,7 +162,6 @@ def _demucs_vocals(
     return vocals_out
 
 
-
 def extract_audio(
     video_path: Path,
     out_dir: Path,
@@ -150,28 +175,41 @@ def extract_audio(
 
     preprocess:
       - none: raw mono wav
-      - speech_filter: lightweight speech-friendly ffmpeg filters
-      - demucs: isolate vocals (best for background music)
+      - speech_filter: apply speech-friendly ffmpeg filters on raw extracted audio
+      - demucs: isolate vocals, THEN apply speech-friendly filters on vocals (best for background music)
     """
     ensure_dir(out_dir)
 
     base_wav = out_dir / f"{video_path.stem}.audio.wav"
 
+    # Conservative speech-friendly filters:
+    # - highpass: remove rumble
+    # - lowpass: remove harsh highs
+    # - dynaudnorm: stabilize loudness
+    # - afftdn: mild noise reduction
+    speech_af = "highpass=f=80,lowpass=f=8000,dynaudnorm=f=150:g=15,afftdn=nf=-25"
+
     if preprocess == "none":
         return _extract_wav(video_path=video_path, out_wav=base_wav, sample_rate=sample_rate)
 
     if preprocess == "speech_filter":
-        af = "highpass=f=80,lowpass=f=8000,dynaudnorm=f=150:g=15,afftdn=nf=-25"
         filtered_wav = out_dir / f"{video_path.stem}.audio.speech.wav"
         return _extract_wav(
             video_path=video_path,
             out_wav=filtered_wav,
             sample_rate=sample_rate,
-            ffmpeg_af=af,
+            ffmpeg_af=speech_af,
         )
 
     if preprocess == "demucs":
+        # 1) extract raw wav
         wav = _extract_wav(video_path=video_path, out_wav=base_wav, sample_rate=sample_rate)
-        return _demucs_vocals(in_wav=wav, out_dir=out_dir, model=demucs_model)
+
+        # 2) demucs vocals
+        vocals = _demucs_vocals(in_wav=wav, out_dir=out_dir, model=demucs_model)
+
+        # 3) apply speech filter ON vocals (NEW)
+        vocals_filtered = out_dir / f"{video_path.stem}.audio.vocals.speech.wav"
+        return _apply_ffmpeg_filter(in_wav=vocals, out_wav=vocals_filtered, ffmpeg_af=speech_af)
 
     raise ValueError(f"Unknown preprocess: {preprocess}")
