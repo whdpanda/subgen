@@ -30,7 +30,7 @@ class RuleSegmenter(SegmenterProvider):
     def __init__(
         self,
         soft_max: float = 7.0,
-        hard_max: float = 20.0,
+        hard_max: float = 15.0,
         pause_cut: float = 0.65,
         min_seg: float = 2.5,
         near_margin: float = 1.5,

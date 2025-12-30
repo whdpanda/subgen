@@ -33,7 +33,7 @@ def coalesce_segments(
     min_dur: float = 2.5,
     min_chars: int = 8,
     target_dur: float = 7.0,
-    hard_max: float = 20.0,
+    hard_max: float = 15.0,
     # ---- Final-pass de-duplication (recommended) ----
     enable_dedupe: bool = True,
     dedupe_time_window_s: float = 30.0,

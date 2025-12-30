@@ -187,7 +187,7 @@ class OpenAISegmenter(SegmenterProvider):
         self,
         model: str = "gpt-5-mini",
         soft_max: float = 7.0,
-        hard_max: float = 20.0,
+        hard_max: float = 15.0,
         min_seg: float = 2.5,
         window_s: float = 60.0,
         overlap_s: float = 2.5,

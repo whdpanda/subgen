@@ -44,11 +44,15 @@ def _cut_audio_range(audio_path: Path, start: float, end: float) -> Path:
     cmd = [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "error",
+        "-loglevel",
+        "error",
         "-y",
-        "-ss", f"{start}",
-        "-to", f"{end}",
-        "-i", str(audio_path),
+        "-ss",
+        f"{start}",
+        "-to",
+        f"{end}",
+        "-i",
+        str(audio_path),
         str(tmp_path),
     ]
     subprocess.run(cmd, check=True)
@@ -81,6 +85,7 @@ def _collect_words_from_fw_segments(fw_segments: List, shift: float = 0.0) -> Li
 def _collect_pseudo_words_from_fw_segments(fw_segments: List, shift: float = 0.0) -> List[Word]:
     """
     回退方案：用 segment.text 拆 token，均分时间，生成 word-like units。
+    注意：这是保底方案，稳定优先；精度取决于 fw_segments 的 start/end。
     """
     out: List[Word] = []
     first_global = True
@@ -168,6 +173,15 @@ def _word_coverage_has_holes(
     hole_total_th_sec: float = 3.0,
     hole_total_th_ratio: float = 0.05,
 ) -> bool:
+    """
+    检查 word 覆盖是否“有洞（holes）”：
+    - 仅对有文本的 fw_segments 检查覆盖率
+    - 覆盖率过低的 segment 计入 hole_total
+    - hole_total 超过阈值即判不可靠
+
+    注意：这里的 fw_segments 与 words 必须在同一时间坐标系下。
+    在 range 场景：它们都是 cut 音频的相对时间 (0..cut_dur)。
+    """
     if audio_end <= 0 or not fw_segments:
         return False
 
@@ -216,15 +230,43 @@ def _words_are_reliable(words: List[Word], fw_segments: List, audio_end: float) 
     return True
 
 
+def _clamp_words_to_range(words: List[Word], start: float, end: float) -> List[Word]:
+    """
+    把 words 裁回 [start,end]。
+    - 保留有交集的 word
+    - start/end clamp 到边界，避免 padding 溢出
+    """
+    if not words or end <= start:
+        return []
+    out: List[Word] = []
+    for w in words:
+        ws = float(w.start)
+        we = float(w.end)
+        if we <= start:
+            continue
+        if ws >= end:
+            break
+        ns = max(ws, start)
+        ne = min(we, end)
+        if ne <= ns:
+            continue
+        w.start = float(ns)
+        w.end = float(ne)
+        if (w.word or "").strip():
+            out.append(w)
+    out.sort(key=lambda x: (float(x.start), float(x.end)))
+    return out
+
+
 class LocalWhisperASR(ASRProvider):
     def __init__(
         self,
         model_name: str = "large-v3",
         device: str = "auto",
         compute_type: Optional[str] = None,
-        beam_size: int = 5,
-        best_of: int = 5,
-        vad_filter: bool = True,
+        beam_size: int = 1,
+        best_of: int = 1,
+        vad_filter: bool = False,
     ):
         self.model_name = model_name
         self.device = _auto_device() if device == "auto" else device
@@ -270,10 +312,23 @@ class LocalWhisperASR(ASRProvider):
         vad_filter: bool,
         temperature: float,
         condition_on_previous_text: bool,
+        pad_left: float = 0.5,
+        pad_right: float = 0.8,
     ):
+        """
+        返回：
+          (fw_segments, info, cut_start, cut_end)
+        其中 fw_segments 的时间戳是相对 cut 音频 (0..cut_dur) 的。
+        """
+        if end <= start:
+            return [], None, float(start), float(end)
+
+        cut_start = max(0.0, float(start) - float(pad_left))
+        cut_end = float(end) + float(pad_right)
+
         tmp_path = None
         try:
-            tmp_path = _cut_audio_range(audio_path, start, end)
+            tmp_path = _cut_audio_range(audio_path, cut_start, cut_end)
             segments_iter, info = self.model.transcribe(
                 str(tmp_path),
                 language=language,
@@ -284,7 +339,7 @@ class LocalWhisperASR(ASRProvider):
                 condition_on_previous_text=condition_on_previous_text,
                 word_timestamps=True,
             )
-            return list(segments_iter), info
+            return list(segments_iter), info, float(cut_start), float(cut_end)
         finally:
             if tmp_path:
                 try:
@@ -317,7 +372,8 @@ class LocalWhisperASR(ASRProvider):
         if end <= start:
             return []
 
-        fw_segments, _info = self._fw_transcribe_range(
+        # 这里 _fw_transcribe_range 返回 4 个值（含 padding 后的 cut_start/cut_end）
+        fw_segments, _info, cut_start, cut_end = self._fw_transcribe_range(
             audio_path=audio_path,
             start=start,
             end=end,
@@ -330,17 +386,19 @@ class LocalWhisperASR(ASRProvider):
         )
 
         # IMPORTANT FIX:
-        # - fw_segments times are RELATIVE to the cut audio (0..range_dur)
+        # - fw_segments times are RELATIVE to the cut audio (0..cut_dur)
         # - do reliability checks in RELATIVE time, then shift to ABSOLUTE time at the end
-        range_dur = float(end) - float(start)
+        cut_dur = float(cut_end) - float(cut_start)
 
         words_rel = _collect_words_from_fw_segments(fw_segments, shift=0.0)
-        if _words_are_reliable(words_rel, fw_segments, range_dur):
-            return self._shift_words(words_rel, float(start))
+        if _words_are_reliable(words_rel, fw_segments, cut_dur):
+            words_abs = self._shift_words(words_rel, float(cut_start))
+            return _clamp_words_to_range(words_abs, float(start), float(end))
 
         logger.warning("Range word timestamps unreliable/holes -> fallback pseudo-words.")
         pseudo_rel = _collect_pseudo_words_from_fw_segments(fw_segments, shift=0.0)
-        return self._shift_words(pseudo_rel, float(start))
+        pseudo_abs = self._shift_words(pseudo_rel, float(cut_start))
+        return _clamp_words_to_range(pseudo_abs, float(start), float(end))
 
     def transcribe_words_range(
         self,

@@ -39,7 +39,7 @@ def split_segments_on_sentence_end_punct(
     words: List[Word],
     segments: List[Segment],
     min_seg: float = 2.5,
-    hard_max: float = 20.0,
+    hard_max: float = 15.0,
     min_tail_chars: int = 4,
 ) -> List[Segment]:
     """

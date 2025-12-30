@@ -45,19 +45,19 @@ def run_pipeline(
     asr_model: str = "large-v3",
     asr_device: str = "cuda",
     asr_compute_type: Optional[str] = "float16",
-    asr_beam_size: int = 5,
-    asr_best_of: int = 5,
-    asr_vad_filter: bool = True,
+    asr_beam_size: int = 1,
+    asr_best_of: int = 1,
+    asr_vad_filter: bool = False,
 
     # Segmenter
     segmenter: str = "openai",  # rule/openai
     openai_segment_model: str = "gpt-5-mini",
     soft_max: float = 7.0,
-    hard_max: float = 20.0,
+    hard_max: float = 15.0,
 
     # Suspect tail-listen
     suspect_dur: float = 10.0,
-    suspect_cps: float = 2.0,
+    suspect_cps: float = 6.0,
 
     # Translator
     translator_name: str = "auto_non_en",

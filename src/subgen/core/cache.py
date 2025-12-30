@@ -26,9 +26,9 @@ def make_asr_cache_key(
     preprocess: Optional[str] = None,
     asr_device: str = "auto",
     asr_compute_type: Optional[str] = None,
-    asr_beam_size: int = 5,
-    asr_best_of: int = 5,
-    asr_vad_filter: bool = True,
+    asr_beam_size: int = 1,
+    asr_best_of: int = 1,
+    asr_vad_filter: bool = False,
 ) -> str:
     """
     Cache key must change when ANY factor that impacts ASR output changes.
