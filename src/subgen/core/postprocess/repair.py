@@ -36,7 +36,7 @@ class RepairConfig:
 
     stuck_min_words: int = 12
     stuck_top1_ratio: float = 0.45
-    stuck_min_run: int = 3  # 连续重复 >= 3 次即可判定卡死
+    stuck_min_run: int = 3       # 连续重复 >= 3 次即可判定卡死
 
     backtrack: float = 1.0       # 默认不回听；如需回听由调用方传入（例如 0.5）
     lookahead: float = 1.5
