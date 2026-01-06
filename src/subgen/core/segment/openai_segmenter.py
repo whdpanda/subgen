@@ -263,7 +263,12 @@ class OpenAISegmenter(SegmenterProvider):
 
             win_words = words[left:right]
             if len(win_words) < 10:
-                break
+                # 窗口内词太少：可能是长静默或 timestamps 洞。不要 break，直接推进 cursor 继续扫描。
+                next_cursor = win_end - self.overlap_s
+                if next_cursor <= cursor + 1e-6:
+                    next_cursor = cursor + min_step
+                cursor = next_cursor
+                continue
 
             cuts = self._call_llm_for_window(win_words)
 
