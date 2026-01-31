@@ -5,7 +5,9 @@ from typing import Optional
 
 import typer
 
-from subgen.core.pipeline import PipelineConfig, run_pipeline
+from subgen.core.contracts import PipelineConfig
+from subgen.core.pipeline import run_pipeline
+
 from subgen.core.audio.extract import AudioPreprocess
 
 app = typer.Typer(help="High-accuracy-first subtitle generator (V1.2: OpenAI semantic segmentation)")

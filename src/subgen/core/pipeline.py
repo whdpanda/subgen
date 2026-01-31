@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Literal
+from typing import Any, Optional
 
-from subgen.core.audio.extract import extract_audio, AudioPreprocess
+from subgen.core.contracts import PipelineConfig, PipelineResult
+
+from subgen.core.audio.extract import extract_audio
 from subgen.core.asr.local_whisper import LocalWhisperASR
 from subgen.core.align.noop import NoopAlign
 from subgen.core.postprocess.punct_split import split_segments_on_sentence_end_punct
@@ -32,69 +33,10 @@ from subgen.core.cache import (
 
 logger = get_logger()
 
-SegmenterName = Literal["rule", "openai"]
-TranslatorName = Literal["auto_non_en", "nllb", "openai"]
-EmitMode = Literal["all", "literal", "bilingual-only", "bilingual", "none"]
-
-
-@dataclass(frozen=True)
-class PipelineConfig:
-    # I/O
-    video_path: Path
-    out_dir: Path
-
-    # language
-    language: str = "auto"
-    target_lang: str = "zh"
-    glossary_path: Optional[Path] = None
-
-    # Audio preprocess
-    preprocess: AudioPreprocess = "none"
-    demucs_model: str = "htdemucs"
-
-    # ASR
-    asr_model: str = "large-v3"
-    asr_device: str = "cuda"
-    asr_compute_type: Optional[str] = "float16"
-    asr_beam_size: int = 1
-    asr_best_of: int = 1
-    asr_vad_filter: bool = False
-
-    # Segmenter
-    segmenter: SegmenterName = "openai"
-    openai_segment_model: str = "gpt-5.2"
-    soft_max: float = 7.0
-    hard_max: float = 15.0
-
-    # Suspect tail-listen
-    suspect_dur: float = 10.0
-    suspect_cps: float = 6.0
-
-    # Translator
-    translator_name: TranslatorName = "auto_non_en"
-    translator_model: str = "facebook/nllb-200-distilled-600M"
-    translator_device: str = "cuda"
-    openai_translate_model: str = "gpt-5.2"
-
-    # Output
-    emit: EmitMode = "bilingual-only"
-
-    # Cache & dumps
-    use_cache: bool = True
-    dump_intermediates: bool = True
-
-@dataclass(frozen=True)
-class PipelineResult:
-    out_dir: Path
-    primary_path: Path
-    srt_paths: list[Path]
-    artifacts: dict[str, Any]
-    meta: dict[str, Any]
-
 
 def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     """
-    Best practice: stable core entrypoint.
+    Stable core entrypoint.
     - CLI / Agent / API all call this
     - Structured output for orchestration + observability
     """
@@ -230,7 +172,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
 
     # 6) translate
     if cfg.translator_name == "auto_non_en":
-        # NOTE: 保留你当前策略：en -> NLLB, others -> OpenAI
+        # NOTE: keep current strategy: en -> NLLB, others -> OpenAI
         if src_lang.lower().startswith("en"):
             translator = NLLBTranslator(model_name=cfg.translator_model, device=cfg.translator_device)
         else:
@@ -289,7 +231,6 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
         primary_path = literal_json_path
 
     if primary_path is None:
-        # 保底：与你原逻辑一致
         primary_path = cfg.out_dir / f"{cfg.video_path.stem}.{cfg.target_lang}.bilingual.srt"
 
     meta.update(
