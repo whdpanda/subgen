@@ -5,15 +5,20 @@ from typing import Optional
 
 import typer
 
-from subgen.core.pipeline import run_pipeline
+from subgen.core.pipeline import PipelineConfig, run_pipeline
 from subgen.core.audio.extract import AudioPreprocess
 
 app = typer.Typer(help="High-accuracy-first subtitle generator (V1.2: OpenAI semantic segmentation)")
 
 
-def _normalize_preprocess(p: Optional[str]) -> Optional[AudioPreprocess]:
+def _normalize_preprocess(p: Optional[str]) -> AudioPreprocess:
+    """
+    CLI 输入是 Optional[str]，但 pipeline 最佳实践希望有明确枚举值。
+    - None / "" / "none" -> "none"
+    - 其他映射到 speech_filter / demucs
+    """
     if p is None:
-        return None
+        return "none"
     p2 = p.strip().lower()
     if p2 in ("", "none"):
         return "none"
@@ -48,7 +53,7 @@ def gen(
 
     # Segmenter (V1.2)
     segmenter: str = typer.Option("openai", help="Segmenter: openai/rule"),
-    openai_segment_model: str = typer.Option("gpt-5-mini", help="OpenAI model for segmentation"),
+    openai_segment_model: str = typer.Option("gpt-5.2", help="OpenAI model for segmentation"),
     soft_max: float = typer.Option(7.0, help="Soft max seconds per subtitle (beauty)"),
     hard_max: float = typer.Option(20.0, help="Hard max seconds per subtitle"),
 
@@ -57,7 +62,7 @@ def gen(
 
     # Translator
     translator: str = typer.Option("auto_non_en", help="Translator: auto_non_en/openai/nllb"),
-    openai_translate_model: str = typer.Option("gpt-5-mini", help="OpenAI translate model"),
+    openai_translate_model: str = typer.Option("gpt-5.2", help="OpenAI translate model"),
     translator_model: str = typer.Option("facebook/nllb-200-distilled-600M", help="NLLB model"),
     translator_device: str = typer.Option("cuda", help="Translator device: auto/cuda/cpu"),
 
@@ -70,7 +75,8 @@ def gen(
 ):
     pp = _normalize_preprocess(preprocess)
 
-    run_pipeline(
+    # ✅ Best practice: CLI -> Config -> Core pipeline
+    cfg = PipelineConfig(
         video_path=input,
         out_dir=out,
         language=lang,
@@ -78,6 +84,8 @@ def gen(
         glossary_path=glossary,
 
         preprocess=pp,
+        # demucs_model 目前 CLI 没暴露参数：pipeline 会用默认值 htdemucs
+        # 如果你想要 CLI 控制 demucs 模型，后续 PR 可以加一个 option 再写进 cfg.demucs_model
 
         asr_model=asr_model,
         asr_device=asr_device,
@@ -86,22 +94,29 @@ def gen(
         asr_best_of=asr_best_of,
         asr_vad_filter=asr_vad_filter,
 
-        segmenter=segmenter,
+        segmenter="openai" if segmenter == "openai" else "rule",
         openai_segment_model=openai_segment_model,
         soft_max=soft_max,
         hard_max=hard_max,
         suspect_dur=suspect_dur,
         suspect_cps=suspect_cps,
 
-        translator_name=translator,
-        openai_translate_model=openai_translate_model,
+        translator_name=translator,  # type: ignore[arg-type]
         translator_model=translator_model,
         translator_device=translator_device,
+        openai_translate_model=openai_translate_model,
 
-        emit=emit,
+        emit=emit,  # type: ignore[arg-type]
         use_cache=(not no_use_cache),
         dump_intermediates=dump_intermediates,
     )
+
+    res = run_pipeline(cfg)
+
+    # CLI 出力：ユーザーがすぐ成果物にアクセスできるようにパスを表示
+    typer.echo(f"OK: {res.primary_path}")
+    for p in res.srt_paths:
+        typer.echo(f"SRT: {p}")
 
 
 if __name__ == "__main__":

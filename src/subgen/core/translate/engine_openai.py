@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import os
-from typing import List
-
-from openai import OpenAI
+from typing import List, Optional
 
 from subgen.core.translate.base import TranslatorProvider
 from subgen.core_types import Transcript, Segment
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM = """
 你是“受约束字幕翻译器（任意语言→中文）”。
 
 硬性要求：
 1) 忠实翻译，不增删事实、不脑补不存在的信息。
-2) 不改数字、人名、地名、组织名、产品名（保持原样）。
+2) 不改数字、人名、地名、组织名、产品名。
 3) 语言自然、简洁、适合字幕；尽量口语化但不改意义。
 4) 只输出【当前段】的中文译文；不要输出解释、不要输出原文、不要加引号。
+5）不要出现未翻译扔保留原语言的内容，对于各种名称以“中文（英文）”的形式出现。
 """.strip()
 
 
@@ -25,16 +22,56 @@ def _safe(s: str) -> str:
     return (s or "").strip()
 
 
+# ---- lazy client (重要：避免 pytest collection 时就初始化) ----
+_client: Optional[object] = None
+
+
+def _get_openai_client(*, api_key: Optional[str] = None) -> object:
+    """
+    Lazy init OpenAI client.
+
+    - 不在 import 时初始化，避免测试收集阶段因为缺 OPENAI_API_KEY 直接炸
+    - 延迟导入 openai，避免没装 openai 时也在 import 阶段炸
+    """
+    global _client
+    if _client is not None and api_key is None:
+        return _client
+
+    key = (api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. "
+            "Set env OPENAI_API_KEY or pass api_key to OpenAITranslator(api_key=...)."
+        )
+
+    try:
+        from openai import OpenAI  # lazy import
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "Missing dependency 'openai'. Install it via: python -m pip install openai"
+        ) from e
+
+    client = OpenAI(api_key=key)
+
+    # 只有在使用 env key 的情况下才缓存全局 client
+    if api_key is None:
+        _client = client
+
+    return client
+
+
 class OpenAITranslator(TranslatorProvider):
     def __init__(
         self,
-        model: str = "gpt-5-mini",
+        model: str = "gpt-5.2",
         prev_k: int = 1,            # 使用前文段数
         next_hint_chars: int = 80,  # 使用后文提示长度（字符）
+        api_key: str | None = None, # 可选：允许显式传 key（测试/多账户更方便）
     ):
         self.model = model
         self.prev_k = max(0, int(prev_k))
         self.next_hint_chars = max(0, int(next_hint_chars))
+        self.api_key = api_key
 
     def _translate_one(self, src_lang: str, prev: str, cur: str, next_hint: str) -> str:
         user = f"""
@@ -49,6 +86,8 @@ class OpenAITranslator(TranslatorProvider):
 【后文提示（用于消歧，可忽略）】
 {next_hint}
 """.strip()
+
+        client = _get_openai_client(api_key=self.api_key)
 
         resp = client.responses.create(
             model=self.model,

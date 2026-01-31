@@ -4,15 +4,12 @@ import os
 import json
 from typing import List, Optional, Tuple
 
-from openai import OpenAI
-
 from subgen.core.segment.base import SegmenterProvider
 from subgen.core.segment.rule import RuleSegmenter
 from subgen.core_types import Word, Segment
 from subgen.utils.logger import get_logger
 
 logger = get_logger()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM = """
 你是“字幕语义切分器”，只做分段，不做翻译。
@@ -182,15 +179,55 @@ def _normalize_no_overlap(segs: List[Segment]) -> List[Segment]:
     return out
 
 
+# ------------------- lazy OpenAI client (关键修改点) -------------------
+
+_client: Optional[object] = None
+
+
+def _get_openai_client(*, api_key: Optional[str] = None) -> object:
+    """
+    Lazy init OpenAI client.
+
+    - 避免 pytest collection/import 阶段就因为缺 OPENAI_API_KEY 爆炸
+    - 延迟导入 openai，没装 openai 时也不会在 import 阶段爆炸
+    """
+    global _client
+    if _client is not None and api_key is None:
+        return _client
+
+    key = (api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. "
+            "To use OpenAISegmenter, set env OPENAI_API_KEY or pass api_key to OpenAISegmenter(api_key=...)."
+        )
+
+    try:
+        from openai import OpenAI  # lazy import
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "Missing dependency 'openai'. Install it via: python -m pip install openai"
+        ) from e
+
+    c = OpenAI(api_key=key)
+    if api_key is None:
+        _client = c
+    return c
+
+
+# ---------------------------------------------------------------------
+
+
 class OpenAISegmenter(SegmenterProvider):
     def __init__(
         self,
-        model: str = "gpt-5-mini",
+        model: str = "gpt-5.2",
         soft_max: float = 7.0,
         hard_max: float = 15.0,
         min_seg: float = 2.5,
         window_s: float = 60.0,
         overlap_s: float = 2.5,
+        api_key: str | None = None,  # ✅ 新增：允许显式传 key（测试/多环境更方便）
     ):
         self.model = model
         self.soft_max = float(soft_max)
@@ -198,6 +235,7 @@ class OpenAISegmenter(SegmenterProvider):
         self.min_seg = float(min_seg)
         self.window_s = float(window_s)
         self.overlap_s = float(overlap_s)
+        self.api_key = api_key
         self.fallback = RuleSegmenter(soft_max=soft_max, hard_max=hard_max, min_seg=min_seg)
 
     def _call_llm_for_window(self, win_words: List[Word]) -> Optional[List[int]]:
@@ -213,6 +251,8 @@ class OpenAISegmenter(SegmenterProvider):
         }
 
         try:
+            client = _get_openai_client(api_key=self.api_key)  # ✅ 关键：此时才创建 client
+
             resp = client.responses.create(
                 model=self.model,
                 input=[

@@ -29,7 +29,7 @@ def openai_rewrite_text(text: str) -> str:
     # 你也可以换成 gpt-4o-mini 以降低成本
     # GPT-5 mini 强指令遵循、速度快，适合这类任务。:contentReference[oaicite:2]{index=2}
     response = client.responses.create(
-        model="gpt-5-mini",
+        model="gpt-5.2",
         input=[
             {
                 "role": "system",

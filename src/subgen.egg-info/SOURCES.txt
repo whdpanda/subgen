@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 src/subgen/__init__.py
 src/subgen/core_types.py
@@ -8,6 +9,7 @@ src/subgen.egg-info/entry_points.txt
 src/subgen.egg-info/requires.txt
 src/subgen.egg-info/top_level.txt
 src/subgen/cli/main.py
+src/subgen/core/__init__.py
 src/subgen/core/cache.py
 src/subgen/core/pipeline.py
 src/subgen/core/align/base.py
@@ -34,3 +36,4 @@ src/subgen/core/translate/engine_openai.py
 src/subgen/core/translate/noop.py
 src/subgen/utils/io.py
 src/subgen/utils/logger.py
+tests/test_pipeline_api.py
