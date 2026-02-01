@@ -17,6 +17,10 @@ class PipelineConfig:
     video_path: Path
     out_dir: Path
 
+    # Optional orchestration fields (for Agent/Service/Queue)
+    job_id: Optional[str] = None
+    output_basename: Optional[str] = None  # default: video_path.stem if None
+
     # language
     language: str = "auto"
     target_lang: str = "zh"
@@ -60,9 +64,20 @@ class PipelineConfig:
 
 @dataclass(frozen=True)
 class PipelineResult:
+    # Core identifiers
+    video_path: Path
     out_dir: Path
+
+    # Primary outputs
     primary_path: Path
     srt_paths: list[Path]
+
+    # Strongly-typed known outputs (stable keys for downstream tools)
+    # Example keys:
+    # - audio, asr_cache, src_json, literal_json, literal_srt, bilingual_srt, primary
+    outputs: dict[str, Path]
+
+    # Flexible extension fields for experiments/metrics
     artifacts: dict[str, Any]
     meta: dict[str, Any]
 
