@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from subgen.core.contracts import PipelineConfig
 from subgen.core.pipeline import run_pipeline
@@ -43,7 +44,9 @@ class PipelineToolArgs(BaseModel):
 
     # Translator
     translator_name: str = Field("auto_non_en", description="auto_non_en/openai/nllb")
-    translator_model: str = Field("facebook/nllb-200-distilled-600M", description="NLLB model")
+    translator_model: str = Field(
+        "facebook/nllb-200-distilled-600M", description="NLLB model"
+    )
     translator_device: str = Field("cuda", description="cuda/cpu/auto")
     openai_translate_model: str = Field("gpt-5.2", description="OpenAI model for translation")
 
@@ -59,9 +62,37 @@ class PipelineToolArgs(BaseModel):
     output_basename: Optional[str] = Field(None, description="Optional output basename")
 
 
-def _parse_tool_args(
-    args_or_kwargs: Union[PipelineToolArgs, dict[str, Any]]
-) -> PipelineToolArgs:
+def _ok(data: Any) -> dict[str, Any]:
+    """Success envelope."""
+    return {"ok": True, "data": data, "error": None}
+
+
+def _fail(err_type: str, message: str, details: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Failure envelope."""
+    return {
+        "ok": False,
+        "data": None,
+        "error": {
+            "type": err_type,
+            "message": message,
+            "details": details or {},
+        },
+    }
+
+
+def _safe_str_dict(d: dict[str, Any]) -> dict[str, Any]:
+    """
+    Make kwargs safe-ish for JSON serialization:
+    - Path -> str
+    - everything else unchanged (best-effort)
+    """
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        out[k] = str(v) if isinstance(v, Path) else v
+    return out
+
+
+def _parse_tool_args(args_or_kwargs: Union[PipelineToolArgs, dict[str, Any]]) -> PipelineToolArgs:
     """
     Normalize tool inputs into PipelineToolArgs.
 
@@ -86,50 +117,106 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
     - StructuredTool(args_schema=PipelineToolArgs) will pass inputs as **kwargs.
     - Therefore this function MUST accept **kwargs (not a single `args` parameter).
 
-    Returns a dict (NOT json string). runtime will json.dumps once.
+    Returns unified envelope:
+      - success: {"ok": True, "data": {...}, "error": None}
+      - failure: {"ok": False, "data": None, "error": {...}}
+
+    runtime can json.dumps once.
     """
-    args = _parse_tool_args(kwargs)
+    # 1) Parse / validate args (never raise)
+    try:
+        args = _parse_tool_args(kwargs)
+    except ValidationError as e:
+        return _fail(
+            err_type="pipeline.validation_error",
+            message="invalid tool arguments",
+            details={
+                "errors": e.errors(),
+                "input": _safe_str_dict(kwargs),
+            },
+        )
+    except Exception as e:
+        return _fail(
+            err_type="pipeline.args_parse_error",
+            message=str(e) or e.__class__.__name__,
+            details={
+                "exception_class": e.__class__.__name__,
+                "traceback": traceback.format_exc(),
+                "input": _safe_str_dict(kwargs),
+            },
+        )
 
-    cfg = PipelineConfig(
-        video_path=args.video_path,
-        out_dir=args.out_dir,
-        job_id=args.job_id,
-        output_basename=args.output_basename,
-        language=args.language,
-        target_lang=args.target_lang,
-        glossary_path=args.glossary_path,
-        preprocess=args.preprocess,  # AudioPreprocess is Literal; str ok in runtime
-        demucs_model=args.demucs_model,
-        asr_model=args.asr_model,
-        asr_device=args.asr_device,
-        asr_compute_type=args.asr_compute_type,
-        asr_beam_size=args.asr_beam_size,
-        asr_best_of=args.asr_best_of,
-        asr_vad_filter=args.asr_vad_filter,
-        segmenter=args.segmenter,  # SegmenterName is Literal; str ok in runtime
-        openai_segment_model=args.openai_segment_model,
-        soft_max=args.soft_max,
-        hard_max=args.hard_max,
-        suspect_dur=args.suspect_dur,
-        suspect_cps=args.suspect_cps,
-        translator_name=args.translator_name,
-        translator_model=args.translator_model,
-        translator_device=args.translator_device,
-        openai_translate_model=args.openai_translate_model,
-        emit=args.emit,
-        use_cache=args.use_cache,
-        dump_intermediates=args.dump_intermediates,
-    )
+    # 2) Build config (never raise)
+    try:
+        cfg = PipelineConfig(
+            video_path=args.video_path,
+            out_dir=args.out_dir,
+            job_id=args.job_id,
+            output_basename=args.output_basename,
+            language=args.language,
+            target_lang=args.target_lang,
+            glossary_path=args.glossary_path,
+            preprocess=args.preprocess,  # AudioPreprocess is Literal; str ok in runtime
+            demucs_model=args.demucs_model,
+            asr_model=args.asr_model,
+            asr_device=args.asr_device,
+            asr_compute_type=args.asr_compute_type,
+            asr_beam_size=args.asr_beam_size,
+            asr_best_of=args.asr_best_of,
+            asr_vad_filter=args.asr_vad_filter,
+            segmenter=args.segmenter,  # SegmenterName is Literal; str ok in runtime
+            openai_segment_model=args.openai_segment_model,
+            soft_max=args.soft_max,
+            hard_max=args.hard_max,
+            suspect_dur=args.suspect_dur,
+            suspect_cps=args.suspect_cps,
+            translator_name=args.translator_name,
+            translator_model=args.translator_model,
+            translator_device=args.translator_device,
+            openai_translate_model=args.openai_translate_model,
+            emit=args.emit,
+            use_cache=args.use_cache,
+            dump_intermediates=args.dump_intermediates,
+        )
+    except Exception as e:
+        return _fail(
+            err_type="pipeline.config_build_error",
+            message=str(e) or e.__class__.__name__,
+            details={
+                "exception_class": e.__class__.__name__,
+                "traceback": traceback.format_exc(),
+                "video_path": str(args.video_path),
+                "out_dir": str(args.out_dir),
+            },
+        )
 
-    res = run_pipeline(cfg)
+    # 3) Run pipeline (never raise)
+    try:
+        res = run_pipeline(cfg)
+    except Exception as e:
+        return _fail(
+            err_type="pipeline.runtime_error",
+            message=str(e) or e.__class__.__name__,
+            details={
+                "exception_class": e.__class__.__name__,
+                "traceback": traceback.format_exc(),
+                # Put a few high-signal fields for PR#4 self-heal
+                "video_path": str(args.video_path),
+                "out_dir": str(args.out_dir),
+                "language": args.language,
+                "target_lang": args.target_lang,
+                "segmenter": args.segmenter,
+                "translator_name": args.translator_name,
+                "emit": args.emit,
+            },
+        )
 
-    # Compatibility: res.outputs may or may not exist depending on your contracts version
+    # 4) Build compatible outputs payload
     outputs: dict[str, str] = {}
     if hasattr(res, "outputs") and getattr(res, "outputs") is not None:
         for k, v in res.outputs.items():  # type: ignore[attr-defined]
             outputs[k] = str(v)
 
-    # Fallback: derive from artifacts if outputs missing
     artifacts = res.artifacts or {}
     if not outputs:
         for k in (
@@ -144,11 +231,12 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             if k in artifacts:
                 outputs[k] = str(artifacts[k])
 
-    return {
-        "ok": True,
+    data = {
         "primary_path": str(res.primary_path),
         "srt_paths": [str(p) for p in res.srt_paths],
         "outputs": outputs,
         "artifacts": artifacts,
         "meta": res.meta or {},
     }
+
+    return _ok(data)

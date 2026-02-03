@@ -11,30 +11,35 @@ from subgen.utils.logger import get_logger
 logger = get_logger()
 
 
-def _ffmpeg_filter_escape_path(p: Path) -> str:
+def _ffmpeg_filter_escape_value(s: str) -> str:
     """
-    Escape file path for ffmpeg subtitles filter argument.
+    Escape a string that will be embedded into an ffmpeg filtergraph argument value
+    and wrapped by single quotes.
 
-    Notes:
-    - Use forward slashes on Windows.
-    - Escape ':' in drive letter as '\\:'.
-    - Escape single quote as "\\'".
-    - Escape filtergraph-sensitive chars: ',', '[', ']'.
+    Handles Windows paths and filtergraph-sensitive characters.
     """
-    s = str(p).replace("\\", "/")
+    # Normalize Windows path separators early
+    s = s.replace("\\", "/")
 
-    # Windows drive: C:/... -> C\:/...
-    s = s.replace(":", r"\:")
-
-    # Quotes
-    s = s.replace("'", r"\'")
-
-    # Filtergraph-sensitive chars
-    s = s.replace(",", r"\,")
+    # Filtergraph escape (order matters a bit; keep it consistent)
+    s = s.replace("\\", r"\\")   # robustness (even after normalization)
+    s = s.replace(":", r"\:")    # drive letter C:
+    s = s.replace("'", r"\'")    # because we wrap with single quotes
+    s = s.replace(",", r"\,")    # filterchain separator
     s = s.replace("[", r"\[")
     s = s.replace("]", r"\]")
-
     return s
+
+
+def _decode_ffmpeg_bytes(b: bytes) -> str:
+    """Decode ffmpeg output robustly on Windows/macOS/Linux."""
+    if not b:
+        return ""
+    # Try utf-8 first; fallback to Windows ANSI codepage
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("mbcs", errors="replace")
 
 
 def burn_subtitles(
@@ -50,14 +55,6 @@ def burn_subtitles(
     audio_codec: str = "aac",
     audio_bitrate: str = "192k",
 ) -> Path:
-    """
-    Burn subtitles into video (hard-sub).
-    - Video: libx264, CRF/preset configurable.
-    - Audio: default to AAC re-encode for maximum mp4 compatibility.
-
-    force_style example (ASS style string):
-      "FontName=Arial,FontSize=16,BorderStyle=1,Outline=1,Shadow=0"
-    """
     if not video_path.exists():
         raise FileNotFoundError(video_path)
     if not srt_path.exists():
@@ -65,26 +62,22 @@ def burn_subtitles(
 
     ensure_dir(out_path.parent)
 
-    sub = _ffmpeg_filter_escape_path(srt_path)
-
-    # Use single quotes around the path; we escaped inner quotes already.
-    vf = f"subtitles='{sub}'"
+    # 1) Build vf with the most stable syntax: subtitles=filename='...'
+    sub = _ffmpeg_filter_escape_value(str(srt_path))
+    vf = f"subtitles=filename='{sub}'"
 
     if force_style:
-        # Escape characters that can break filtergraph parsing.
-        safe_style = (
-            force_style
-            .replace("\\", "/")
-            .replace("'", r"\'")
-            .replace(",", r"\,")
-            .replace("[", r"\[")
-            .replace("]", r"\]")
-        )
+        safe_style = _ffmpeg_filter_escape_value(force_style)
         vf += f":force_style='{safe_style}'"
 
+    # 2) Force low-noise, agent-friendly ffmpeg flags
     cmd = [
         ffmpeg_bin,
         "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
         "-i",
         str(video_path),
         "-vf",
@@ -101,7 +94,6 @@ def burn_subtitles(
         cmd += ["-c:a", "copy"]
     else:
         cmd += ["-c:a", audio_codec]
-        # For AAC, bitrate is the common knob. If empty, omit.
         if audio_bitrate:
             cmd += ["-b:a", audio_bitrate]
 
@@ -109,7 +101,7 @@ def burn_subtitles(
 
     logger.info("ffmpeg burn cmd: %s", " ".join(cmd))
 
-    # Windows robustness: force UTF-8 env to avoid encoding issues
+    # 3) Env: keep, but don't rely on it for ffmpeg's encoding
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
@@ -117,22 +109,26 @@ def burn_subtitles(
     env.setdefault("LC_ALL", "C.UTF-8")
 
     try:
-        subprocess.run(
+        # 4) Capture bytes and decode ourselves (prevents UnicodeDecodeError)
+        proc = subprocess.run(
             cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=env,
         )
-    except subprocess.CalledProcessError as e:
-        stderr = (e.stderr or "").strip()
-        stdout = (e.stdout or "").strip()
+    except FileNotFoundError as e:
+        # ffmpeg not found / wrong path
+        raise RuntimeError(f"ffmpeg not found: {ffmpeg_bin}") from e
+
+    if proc.returncode != 0:
+        stdout = _decode_ffmpeg_bytes(proc.stdout).strip()
+        stderr = _decode_ffmpeg_bytes(proc.stderr).strip()
         raise RuntimeError(
             "ffmpeg burn failed.\n"
             f"cmd: {' '.join(cmd)}\n"
             f"stdout: {stdout[:2000]}\n"
             f"stderr: {stderr[:4000]}"
-        ) from e
+        )
 
     return out_path
