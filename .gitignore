@@ -1,11 +1,18 @@
 # ---- 虚拟环境 & 生成文件 ----
 .venv/
 out/
+.subgen_kb/
 
 # ---- Python 编译缓存 ----
 __pycache__/
 *.py[cod]
 *$py.class
+
+# ---- Python 打包/构建产物 ----
+build/
+dist/
+*.whl
+*.egg-info/
 
 # ---- 工具/IDE 相关（按需保留）----
 .vscode/
@@ -21,3 +28,4 @@ htmlcov/
 # ---- 其他杂项（按需）----
 *.log
 .DS_Store
+Thumbs.db
