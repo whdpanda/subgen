@@ -1,0 +1,7 @@
+1
+00:00:00,000 --> 00:00:03,000
+This is a very very very long line that should be wrapped into multiple lines.
+
+2
+00:00:03,000 --> 00:00:06,000
+这是一个非常非常非常非常非常长的中文句子，需要在合适的位置断行以满足行宽限制。

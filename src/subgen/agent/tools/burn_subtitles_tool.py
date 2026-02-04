@@ -27,30 +27,10 @@ class BurnToolArgs(BaseModel):
     audio_bitrate: str = Field("192k", description="Audio bitrate when encoding")
 
 
-def _ok(data: Any) -> dict[str, Any]:
-    """Success envelope."""
-    return {"ok": True, "data": data, "error": None}
-
-
-def _fail(err_type: str, message: str, details: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Failure envelope."""
-    return {
-        "ok": False,
-        "data": None,
-        "error": {
-            "type": err_type,
-            "message": message,
-            "details": details or {},
-        },
-    }
-
-
+# -------------------------
+# JSON-safe helpers
+# -------------------------
 def _safe_str_dict(d: dict[str, Any]) -> dict[str, Any]:
-    """
-    Make kwargs safe-ish for JSON serialization:
-    - Path -> str
-    - everything else unchanged (best-effort)
-    """
     out: dict[str, Any] = {}
     for k, v in d.items():
         out[k] = str(v) if isinstance(v, Path) else v
@@ -83,17 +63,53 @@ def _resolve_path(p: Path) -> Path:
     if out_candidate.exists():
         return out_candidate
 
-    # give best-effort resolved path for error messages
     return cwd_candidate
+
+
+# -------------------------
+# Flat schema helpers (TOOL-side)
+# -------------------------
+def _ok_flat(*, out_video_path: Union[str, Path], artifacts: Optional[dict[str, Any]] = None, meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "out_video_path": str(out_video_path),
+        "artifacts": _safe_str_dict(artifacts or {}),
+        "meta": _safe_str_dict(meta or {}),
+    }
+
+
+def _fail_flat(
+    *,
+    err_type: str,
+    message: str,
+    details: Optional[dict[str, Any]] = None,
+    # keep schema stable
+    out_video_path: Optional[Union[str, Path]] = None,
+    artifacts: Optional[dict[str, Any]] = None,
+    meta: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    m = dict(meta or {})
+    m["error"] = {
+        "type": err_type,
+        "message": message,
+        "details": _safe_str_dict(details or {}),
+    }
+    return {
+        "ok": False,
+        "out_video_path": str(out_video_path) if out_video_path is not None else None,
+        "artifacts": _safe_str_dict(artifacts or {}),
+        "meta": _safe_str_dict(m),
+    }
 
 
 def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     """
     LangChain tool entrypoint.
 
-    Returns unified envelope:
-      - success: {"ok": True, "data": {...}, "error": None}
-      - failure: {"ok": False, "data": None, "error": {...}}
+    Returns stable FLAT schema (NO envelope):
+      - success/failure keys are always:
+        {"ok","out_video_path","artifacts","meta"}
+      - failure details are stored in meta["error"]
 
     Never raises to runtime.
     """
@@ -101,16 +117,13 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     try:
         args = _parse_tool_args(kwargs)
     except ValidationError as e:
-        return _fail(
+        return _fail_flat(
             err_type="burn.validation_error",
             message="invalid tool arguments",
-            details={
-                "errors": e.errors(),
-                "input": _safe_str_dict(kwargs),
-            },
+            details={"errors": e.errors(), "input": _safe_str_dict(kwargs)},
         )
     except Exception as e:
-        return _fail(
+        return _fail_flat(
             err_type="burn.args_parse_error",
             message=str(e) or e.__class__.__name__,
             details={
@@ -124,18 +137,20 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     video_path = _resolve_path(args.video_path)
     srt_path = _resolve_path(args.srt_path)
 
-    # 3) Pre-check inputs (更利于 PR#4 自愈：不用等 ffmpeg 报错才知道路径不对)
+    # 3) Pre-check inputs
     if not video_path.exists():
-        return _fail(
+        return _fail_flat(
             err_type="burn.input_not_found",
             message="video_path does not exist",
             details={"video_path": str(video_path), "given": str(args.video_path)},
+            meta={"video_path": str(video_path), "srt_path": str(srt_path)},
         )
     if not srt_path.exists():
-        return _fail(
+        return _fail_flat(
             err_type="burn.input_not_found",
             message="srt_path does not exist",
             details={"srt_path": str(srt_path), "given": str(args.srt_path)},
+            meta={"video_path": str(video_path), "srt_path": str(srt_path)},
         )
 
     # 4) Resolve out_path
@@ -146,7 +161,7 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
         else:
             out_path = args.out_path if args.out_path.is_absolute() else (Path.cwd() / args.out_path).resolve()
     except Exception as e:
-        return _fail(
+        return _fail_flat(
             err_type="burn.output_path_error",
             message=str(e) or e.__class__.__name__,
             details={
@@ -155,9 +170,10 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
                 "video_path": str(video_path),
                 "out_path": str(args.out_path) if args.out_path is not None else None,
             },
+            meta={"video_path": str(video_path), "srt_path": str(srt_path)},
         )
 
-    # 5) Burn (never raise)
+    # 5) Burn
     try:
         p = burn_subtitles(
             video_path=video_path,
@@ -172,8 +188,7 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
             audio_bitrate=args.audio_bitrate,
         )
     except FileNotFoundError as e:
-        # 常见：ffmpeg_bin 找不到 或输入路径问题
-        return _fail(
+        return _fail_flat(
             err_type="burn.not_found",
             message=str(e) or "file not found",
             details={
@@ -183,11 +198,15 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
                 "ffmpeg_bin": args.ffmpeg_bin,
                 "traceback": traceback.format_exc(),
             },
+            meta={
+                "video_path": str(video_path),
+                "srt_path": str(srt_path),
+                "out_path": str(out_path),
+                "ffmpeg_bin": args.ffmpeg_bin,
+            },
         )
     except Exception as e:
-        # 如果你的 burn_subtitles 内部用 subprocess.run(capture_output=True)，
-        # 强烈建议它把 stderr 附在异常里（或返回结构里），这里就能塞进 details，利于自愈。
-        return _fail(
+        return _fail_flat(
             err_type="burn.runtime_error",
             message=str(e) or e.__class__.__name__,
             details={
@@ -204,13 +223,27 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
                 "audio_codec": args.audio_codec,
                 "audio_bitrate": args.audio_bitrate,
             },
+            meta={
+                "video_path": str(video_path),
+                "srt_path": str(srt_path),
+                "out_path": str(out_path),
+                "ffmpeg_bin": args.ffmpeg_bin,
+            },
         )
 
     # 6) Success
-    data = {
-        "out_video_path": str(p),
-        "video_path": str(video_path),
-        "srt_path": str(srt_path),
-        "out_path": str(out_path),
-    }
-    return _ok(data)
+    return _ok_flat(
+        out_video_path=p,
+        meta={
+            "video_path": str(video_path),
+            "srt_path": str(srt_path),
+            "out_path": str(out_path),
+            "ffmpeg_bin": args.ffmpeg_bin,
+            "force_style": args.force_style,
+            "crf": args.crf,
+            "preset": args.preset,
+            "copy_audio": args.copy_audio,
+            "audio_codec": args.audio_codec,
+            "audio_bitrate": args.audio_bitrate,
+        },
+    )

@@ -44,9 +44,7 @@ class PipelineToolArgs(BaseModel):
 
     # Translator
     translator_name: str = Field("auto_non_en", description="auto_non_en/openai/nllb")
-    translator_model: str = Field(
-        "facebook/nllb-200-distilled-600M", description="NLLB model"
-    )
+    translator_model: str = Field("facebook/nllb-200-distilled-600M", description="NLLB model")
     translator_device: str = Field("cuda", description="cuda/cpu/auto")
     openai_translate_model: str = Field("gpt-5.2", description="OpenAI model for translation")
 
@@ -62,43 +60,18 @@ class PipelineToolArgs(BaseModel):
     output_basename: Optional[str] = Field(None, description="Optional output basename")
 
 
-def _ok(data: Any) -> dict[str, Any]:
-    """Success envelope."""
-    return {"ok": True, "data": data, "error": None}
-
-
-def _fail(err_type: str, message: str, details: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Failure envelope."""
-    return {
-        "ok": False,
-        "data": None,
-        "error": {
-            "type": err_type,
-            "message": message,
-            "details": details or {},
-        },
-    }
+def _safe_str_value(v: Any) -> Any:
+    return str(v) if isinstance(v, Path) else v
 
 
 def _safe_str_dict(d: dict[str, Any]) -> dict[str, Any]:
-    """
-    Make kwargs safe-ish for JSON serialization:
-    - Path -> str
-    - everything else unchanged (best-effort)
-    """
     out: dict[str, Any] = {}
     for k, v in d.items():
-        out[k] = str(v) if isinstance(v, Path) else v
+        out[k] = _safe_str_value(v)
     return out
 
 
 def _parse_tool_args(args_or_kwargs: Union[PipelineToolArgs, dict[str, Any]]) -> PipelineToolArgs:
-    """
-    Normalize tool inputs into PipelineToolArgs.
-
-    LangChain StructuredTool will call tools with **kwargs (dict-like).
-    Older direct calls may pass PipelineToolArgs instance.
-    """
     if isinstance(args_or_kwargs, PipelineToolArgs):
         return args_or_kwargs
 
@@ -109,34 +82,72 @@ def _parse_tool_args(args_or_kwargs: Union[PipelineToolArgs, dict[str, Any]]) ->
     return PipelineToolArgs(**args_or_kwargs)
 
 
+def _ok_flat(
+    *,
+    primary_path: Optional[Union[str, Path]],
+    srt_paths: list[Union[str, Path]],
+    outputs: dict[str, Any],
+    artifacts: dict[str, Any],
+    meta: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "primary_path": str(primary_path) if primary_path is not None else None,
+        "srt_paths": [str(p) for p in (srt_paths or [])],
+        "outputs": _safe_str_dict(outputs or {}),
+        "artifacts": _safe_str_dict(artifacts or {}),
+        "meta": _safe_str_dict(meta or {}),
+    }
+
+
+def _fail_flat(
+    *,
+    err_type: str,
+    message: str,
+    details: Optional[dict[str, Any]] = None,
+    # keep schema stable
+    primary_path: Optional[Union[str, Path]] = None,
+    srt_paths: Optional[list[Union[str, Path]]] = None,
+    outputs: Optional[dict[str, Any]] = None,
+    artifacts: Optional[dict[str, Any]] = None,
+    meta: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    m = dict(meta or {})
+    m["error"] = {
+        "type": err_type,
+        "message": message,
+        "details": _safe_str_dict(details or {}),
+    }
+    return {
+        "ok": False,
+        "primary_path": str(primary_path) if primary_path is not None else None,
+        "srt_paths": [str(p) for p in (srt_paths or [])],
+        "outputs": _safe_str_dict(outputs or {}),
+        "artifacts": _safe_str_dict(artifacts or {}),
+        "meta": _safe_str_dict(m),
+    }
+
+
 def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
     """
-    LangChain tool entrypoint.
+    Tool entrypoint for LangChain StructuredTool.
 
-    IMPORTANT:
-    - StructuredTool(args_schema=PipelineToolArgs) will pass inputs as **kwargs.
-    - Therefore this function MUST accept **kwargs (not a single `args` parameter).
-
-    Returns unified envelope:
-      - success: {"ok": True, "data": {...}, "error": None}
-      - failure: {"ok": False, "data": None, "error": {...}}
-
-    runtime can json.dumps once.
+    Returns stable flat schema (NO envelope):
+      - success/failure keys are always:
+        {"ok","primary_path","srt_paths","outputs","artifacts","meta"}
+      - failure details are stored in meta["error"]
     """
     # 1) Parse / validate args (never raise)
     try:
         args = _parse_tool_args(kwargs)
     except ValidationError as e:
-        return _fail(
+        return _fail_flat(
             err_type="pipeline.validation_error",
             message="invalid tool arguments",
-            details={
-                "errors": e.errors(),
-                "input": _safe_str_dict(kwargs),
-            },
+            details={"errors": e.errors(), "input": _safe_str_dict(kwargs)},
         )
     except Exception as e:
-        return _fail(
+        return _fail_flat(
             err_type="pipeline.args_parse_error",
             message=str(e) or e.__class__.__name__,
             details={
@@ -156,7 +167,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             language=args.language,
             target_lang=args.target_lang,
             glossary_path=args.glossary_path,
-            preprocess=args.preprocess,  # AudioPreprocess is Literal; str ok in runtime
+            preprocess=args.preprocess,
             demucs_model=args.demucs_model,
             asr_model=args.asr_model,
             asr_device=args.asr_device,
@@ -164,7 +175,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             asr_beam_size=args.asr_beam_size,
             asr_best_of=args.asr_best_of,
             asr_vad_filter=args.asr_vad_filter,
-            segmenter=args.segmenter,  # SegmenterName is Literal; str ok in runtime
+            segmenter=args.segmenter,
             openai_segment_model=args.openai_segment_model,
             soft_max=args.soft_max,
             hard_max=args.hard_max,
@@ -179,7 +190,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             dump_intermediates=args.dump_intermediates,
         )
     except Exception as e:
-        return _fail(
+        return _fail_flat(
             err_type="pipeline.config_build_error",
             message=str(e) or e.__class__.__name__,
             details={
@@ -188,19 +199,28 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
                 "video_path": str(args.video_path),
                 "out_dir": str(args.out_dir),
             },
+            meta={"video_path": str(args.video_path), "out_dir": str(args.out_dir)},
         )
 
     # 3) Run pipeline (never raise)
     try:
         res = run_pipeline(cfg)
     except Exception as e:
-        return _fail(
+        return _fail_flat(
             err_type="pipeline.runtime_error",
             message=str(e) or e.__class__.__name__,
             details={
                 "exception_class": e.__class__.__name__,
                 "traceback": traceback.format_exc(),
-                # Put a few high-signal fields for PR#4 self-heal
+                "video_path": str(args.video_path),
+                "out_dir": str(args.out_dir),
+                "language": args.language,
+                "target_lang": args.target_lang,
+                "segmenter": args.segmenter,
+                "translator_name": args.translator_name,
+                "emit": args.emit,
+            },
+            meta={
                 "video_path": str(args.video_path),
                 "out_dir": str(args.out_dir),
                 "language": args.language,
@@ -211,7 +231,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             },
         )
 
-    # 4) Build compatible outputs payload
+    # 4) Build outputs payload
     outputs: dict[str, str] = {}
     if hasattr(res, "outputs") and getattr(res, "outputs") is not None:
         for k, v in res.outputs.items():  # type: ignore[attr-defined]
@@ -231,12 +251,10 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             if k in artifacts:
                 outputs[k] = str(artifacts[k])
 
-    data = {
-        "primary_path": str(res.primary_path),
-        "srt_paths": [str(p) for p in res.srt_paths],
-        "outputs": outputs,
-        "artifacts": artifacts,
-        "meta": res.meta or {},
-    }
-
-    return _ok(data)
+    return _ok_flat(
+        primary_path=getattr(res, "primary_path", None),
+        srt_paths=getattr(res, "srt_paths", []) or [],
+        outputs=outputs,
+        artifacts=artifacts,
+        meta=getattr(res, "meta", {}) or {},
+    )

@@ -5,7 +5,7 @@ import json
 import os
 import traceback
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 from pydantic import ValidationError
 
@@ -47,7 +47,7 @@ Tool best practice:
 
 
 # -------------------------
-# Envelope helpers (runtime-side)
+# Envelope helpers (runtime-side ONLY: printing/logging/API response)
 # -------------------------
 def _ok(data: Any) -> Dict[str, Any]:
     return {"ok": True, "data": data, "error": None}
@@ -70,23 +70,12 @@ def _safe_json_loads(s: str) -> Dict[str, Any]:
         obj = json.loads(s)
         if isinstance(obj, dict):
             return obj
-        # some tool calls might pass a JSON list; normalize to dict
         return {"_args": obj}
     except Exception:
-        # If arguments aren't valid JSON, keep as raw string
         return {"_raw": s}
 
 
 def _normalize_one_tool_call(call: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize tool call from multiple possible shapes into:
-      {"id": "...", "name": "...", "args": {...}}
-
-    Supported shapes:
-    1) {"id": "...", "name": "...", "args": {...}}
-    2) {"id": "...", "function": {"name": "...", "arguments": "<json string>"}}
-    3) {"function": {"name": "...", "arguments": "<json string>"}}
-    """
     call_id = call.get("id") or call.get("tool_call_id") or f"call_{uuid.uuid4().hex}"
 
     # LangChain typically: {"name":..., "args":...}
@@ -114,13 +103,8 @@ def _normalize_one_tool_call(call: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_tool_calls(ai_msg: Any) -> List[Dict[str, Any]]:
-    """
-    Normalize tool calls across langchain versions.
-    Returns: [{"id": "...", "name": "...", "args": {...}}, ...]
-    """
     calls = getattr(ai_msg, "tool_calls", None)
     if calls:
-        # calls could be list[dict] or list[ToolCall]
         out: List[Dict[str, Any]] = []
         for c in list(calls):
             out.append(_normalize_one_tool_call(dict(c)))
@@ -137,37 +121,138 @@ def _extract_tool_calls(ai_msg: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _safe_tool_invoke(tool: StructuredTool, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+# -------------------------
+# Tool output normalization for LLM:
+# - LLM should see FLAT schemas
+# - runtime may still envelope for printing/logging, but NOT in ToolMessage
+# -------------------------
+def _flat_fail_pipeline(err_type: str, message: str, details: dict[str, Any], tool_args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "primary_path": None,
+        "srt_paths": [],
+        "outputs": {},
+        "artifacts": {},
+        "meta": {
+            "error": {"type": err_type, "message": message, "details": details},
+            "input": tool_args,
+        },
+    }
+
+
+def _flat_fail_burn(err_type: str, message: str, details: dict[str, Any], tool_args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "out_video_path": None,
+        "artifacts": {},
+        "meta": {
+            "error": {"type": err_type, "message": message, "details": details},
+            "input": tool_args,
+        },
+    }
+
+
+def _flat_fail_kb(err_type: str, message: str, details: dict[str, Any], tool_args: dict[str, Any]) -> dict[str, Any]:
+    # best-effort; your kb tool通常返回 {"query","k","kb","results"} 之类
+    return {
+        "ok": False,
+        "query": tool_args.get("query"),
+        "k": tool_args.get("k"),
+        "kb": None,
+        "results": [],
+        "meta": {"error": {"type": err_type, "message": message, "details": details}},
+    }
+
+
+FAIL_BUILDERS: dict[str, Callable[[str, str, dict[str, Any], dict[str, Any]], dict[str, Any]]] = {
+    RUN_SUBGEN_PIPELINE: _flat_fail_pipeline,
+    BURN_SUBTITLES: _flat_fail_burn,
+    KB_SEARCH: _flat_fail_kb,
+}
+
+
+def _flatten_envelope_for_llm(tool_name: str, env: dict[str, Any]) -> dict[str, Any]:
+    """
+    Convert legacy envelope {"ok","data","error"} into flat schema for LLM, best-effort.
+    Rule:
+      - if data is a dict => return data plus ok; if error exists, put into meta.error
+      - else => fallback to tool-specific fail builder
+    """
+    ok = bool(env.get("ok"))
+    data = env.get("data")
+    err = env.get("error")
+
+    if isinstance(data, dict):
+        # Ensure ok is present at top-level (some legacy data may not contain it)
+        out = dict(data)
+        out["ok"] = ok
+
+        if err:
+            meta = out.get("meta") or {}
+            if not isinstance(meta, dict):
+                meta = {"_meta": meta}
+            meta["error"] = err
+            out["meta"] = meta
+        return out
+
+    # If not dict, fallback
+    builder = FAIL_BUILDERS.get(tool_name)
+    if builder:
+        return builder(
+            f"{tool_name}.legacy_envelope_shape",
+            "legacy tool returned non-dict data in envelope",
+            {"data_type": str(type(data)), "error": err},
+            {},
+        )
+    return {"ok": ok, "meta": {"error": err, "data": data}}
+
+
+def _safe_tool_invoke_flat_for_llm(tool: StructuredTool, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Ensure:
     - runtime never crashes due to tool.invoke errors (incl. args_schema validation)
-    - always returns envelope
+    - ALWAYS return a FLAT schema dict to feed back to LLM via ToolMessage
     """
     try:
         result = tool.invoke(tool_args)
 
-        # Backward compat: if tool not yet migrated, wrap it
-        if not _is_envelope(result):
-            return _ok(result)
-        return result
+        # Legacy compat: if some tool still returns envelope, flatten it for LLM
+        if _is_envelope(result):
+            return _flatten_envelope_for_llm(tool_name, result)
+
+        # New world: tool returns flat schema already
+        if isinstance(result, dict):
+            return result
+
+        # Non-dict result is unexpected for tools; convert to minimal dict
+        return {"ok": True, "result": result}
 
     except ValidationError as e:
-        # IMPORTANT: this happens BEFORE your tool function runs if args_schema is set
-        return _fail(
-            err_type=f"{tool_name}.validation_error",
-            message="tool args validation failed",
-            details={"errors": e.errors(), "args": tool_args},
-        )
+        builder = FAIL_BUILDERS.get(tool_name)
+        if builder:
+            return builder(
+                f"{tool_name}.validation_error",
+                "tool args validation failed (raised by StructuredTool args_schema before tool ran)",
+                {"errors": e.errors()},
+                tool_args,
+            )
+        return {"ok": False, "meta": {"error": {"type": f"{tool_name}.validation_error", "message": "validation failed", "details": {"errors": e.errors(), "args": tool_args}}}}
+
     except Exception as e:
-        return _fail(
-            err_type=f"{tool_name}.invoke_error",
-            message=str(e) or e.__class__.__name__,
-            details={
-                "exception_class": e.__class__.__name__,
-                "traceback": traceback.format_exc(),
-                "args": tool_args,
-            },
-        )
+        builder = FAIL_BUILDERS.get(tool_name)
+        details = {
+            "exception_class": e.__class__.__name__,
+            "traceback": traceback.format_exc(),
+            "args": tool_args,
+        }
+        if builder:
+            return builder(
+                f"{tool_name}.invoke_error",
+                str(e) or e.__class__.__name__,
+                details,
+                tool_args,
+            )
+        return {"ok": False, "meta": {"error": {"type": f"{tool_name}.invoke_error", "message": str(e) or e.__class__.__name__, "details": details}}}
 
 
 def _assert_tool_name(tool: Any, expected: str, label: str) -> None:
@@ -189,12 +274,12 @@ def build_tools() -> List[StructuredTool]:
     _assert_tool_name(kb_tool, KB_SEARCH, "kb_search")
 
     pipeline_tool = StructuredTool.from_function(
-        name=RUN_SUBGEN_PIPELINE,  # ✅ 固定对外工具名
+        name=RUN_SUBGEN_PIPELINE,
         description=(
             "Run subgen pipeline to generate subtitles. "
             "Inputs: video_path, out_dir, language, target_lang, preprocess, segmenter, "
             "openai_segment_model, translator_name, emit, use_cache, dump_intermediates, etc. "
-            "Returns (enveloped): data.primary_path, data.srt_paths, data.outputs, data.artifacts, data.meta."
+            "Returns: primary_path, srt_paths, outputs, artifacts, meta (flat schema)."
         ),
         func=run_subgen_pipeline_tool,
         args_schema=PipelineToolArgs,
@@ -202,11 +287,11 @@ def build_tools() -> List[StructuredTool]:
     _assert_tool_name(pipeline_tool, RUN_SUBGEN_PIPELINE, "run_subgen_pipeline")
 
     burn_tool = StructuredTool.from_function(
-        name=BURN_SUBTITLES,  # ✅ 固定对外工具名
+        name=BURN_SUBTITLES,
         description=(
             "Burn an SRT subtitle file into the video (hard-sub) using ffmpeg. "
             "Inputs: video_path, srt_path, out_path(optional), force_style(optional), crf, preset, copy_audio. "
-            "Returns (enveloped): data.out_video_path."
+            "Returns: out_video_path, artifacts, meta (flat schema)."
         ),
         func=burn_subtitles_tool,
         args_schema=BurnToolArgs,
@@ -215,7 +300,6 @@ def build_tools() -> List[StructuredTool]:
 
     tools = [kb_tool, pipeline_tool, burn_tool]
 
-    # --- 防止重复 name（会覆盖 tool_map）---
     names = [t.name for t in tools]
     if len(set(names)) != len(names):
         raise RuntimeError(f"Duplicate tool names found: {names}")
@@ -226,9 +310,9 @@ def build_tools() -> List[StructuredTool]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="SubGen Agent (LangChain minimal runtime)")
     parser.add_argument("--query", "-q", required=True, help="User query to the agent")
+    parser.add_argument("--debug-envelope", action="store_true", help="Print runtime envelope for debugging (NOT fed to LLM)")
     args = parser.parse_args()
 
-    # NOTE: model name and key are resolved by langchain_openai / env
     model_name = os.getenv("SUBGEN_AGENT_MODEL", "gpt-5.2")
     llm = ChatOpenAI(model=model_name, temperature=0)
 
@@ -248,7 +332,6 @@ def main() -> None:
         if tool_calls:
             print("[DEBUG] tool_calls:", [(c.get("name"), c.get("args")) for c in tool_calls])
 
-            # Append assistant message containing tool calls
             messages.append(ai_msg)
 
             for call in tool_calls:
@@ -257,30 +340,30 @@ def main() -> None:
 
                 tool = tool_map.get(name)
                 if tool is None:
-                    # Unknown tool call should NOT crash the whole runtime in PR#4 context
-                    result = _fail(
-                        err_type="runtime.unknown_tool",
-                        message=f"Unknown tool called: {name}",
-                        details={"name": name, "available": list(tool_map.keys())},
-                    )
+                    # Unknown tool call should NOT crash the whole runtime
+                    flat = {"ok": False, "meta": {"error": {"type": "runtime.unknown_tool", "message": f"Unknown tool called: {name}", "details": {"available": list(tool_map.keys())}}}}
                 else:
                     tool_args: Dict[str, Any] = call.get("args") or {}
                     if not isinstance(tool_args, dict):
                         tool_args = {"_args": tool_args}
-                    result = _safe_tool_invoke(tool, tool_name=name or "unknown", tool_args=tool_args)
 
-                # Append tool result (must include tool_call_id)
+                    flat = _safe_tool_invoke_flat_for_llm(tool, tool_name=name or "unknown", tool_args=tool_args)
+
+                # (Optional) runtime-side envelope for printing/logging only
+                if args.debug_envelope:
+                    print("[DEBUG] tool_result_enveloped_for_logs:", json.dumps(_ok(flat) if flat.get("ok") else _fail("tool.failed", "see data", {"data": flat}), ensure_ascii=False))
+
+                # Feed FLAT result to LLM
                 messages.append(
                     ToolMessage(
                         tool_call_id=call_id,
-                        content=json.dumps(result, ensure_ascii=False),
+                        content=json.dumps(flat, ensure_ascii=False),
                     )
                 )
             continue
 
         # No tool call => final answer
         content = getattr(ai_msg, "content", "")
-        # Some LC versions may return list/blocks; normalize to string.
         if isinstance(content, list):
             content = "\n".join([str(x) for x in content])
         print(content)

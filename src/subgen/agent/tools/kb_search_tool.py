@@ -16,27 +16,71 @@ class KBResultItem(TypedDict):
     text: str
 
 
+class KBError(TypedDict, total=False):
+    type: str
+    message: str
+    details: Dict[str, Any]
+
+
+class KBMeta(TypedDict, total=False):
+    error: KBError
+    # you can add more runtime hints later (e.g., "index_version", "timing_ms", ...)
+
+
 class KBSearchResult(TypedDict):
+    ok: bool
     query: str
     k: int
     kb: Dict[str, Any]
     results: List[KBResultItem]
+    meta: KBMeta
 
 
-def _ok(data: Any) -> dict[str, Any]:
-    """Success envelope."""
-    return {"ok": True, "data": data, "error": None}
+def _ok(payload: Dict[str, Any], *, meta: Optional[Dict[str, Any]] = None) -> KBSearchResult:
+    """
+    Success: stable FLAT schema.
+
+    Keys are fixed for agent/KB/docs stability:
+      ok/query/k/kb/results/meta
+    """
+    return {
+        "ok": True,
+        "query": payload["query"],
+        "k": payload["k"],
+        "kb": payload["kb"],
+        "results": payload["results"],
+        "meta": meta or {},
+    }
 
 
-def _fail(err_type: str, message: str, details: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Failure envelope."""
+def _fail(
+    err_type: str,
+    message: str,
+    *,
+    query: Any = "",
+    k: Any = 0,
+    kb_info: Optional[dict[str, Any]] = None,
+    details: Optional[dict[str, Any]] = None,
+) -> KBSearchResult:
+    """
+    Failure: still return the same FLAT schema keys.
+    Error goes to meta["error"].
+    """
+    q = query if isinstance(query, str) else ""
+    kk = k if isinstance(k, int) else 0
+
     return {
         "ok": False,
-        "data": None,
-        "error": {
-            "type": err_type,
-            "message": message,
-            "details": details or {},
+        "query": q,
+        "k": kk,
+        "kb": kb_info or {},
+        "results": [],
+        "meta": {
+            "error": {
+                "type": err_type,
+                "message": message,
+                "details": details or {},
+            }
         },
     }
 
@@ -44,28 +88,38 @@ def _fail(err_type: str, message: str, details: Optional[dict[str, Any]] = None)
 def make_kb_search_tool() -> StructuredTool:
     kb = KnowledgeBase(kb_config_from_env())
 
-    def _kb_search(query: str, k: int = 6) -> dict[str, Any]:
+    def _kb_search(query: str, k: int = 6) -> KBSearchResult:
         """
-        Tool function (wrapped to always return envelope).
+        Tool function:
+        - Validates args (lightweight)
+        - Calls KB search
+        - Returns stable flat schema
         """
-        # 1) 轻量参数校验：别让乱参直接炸
+        # 1) Lightweight validation: don't crash on bad args
         if not isinstance(query, str) or not query.strip():
             return _fail(
                 err_type="kb_search.validation_error",
                 message="query must be a non-empty string",
+                query=query,
+                k=k,
+                kb_info=kb.info(),
                 details={"query": query},
             )
+
         if not isinstance(k, int) or k <= 0:
             return _fail(
                 err_type="kb_search.validation_error",
                 message="k must be a positive integer",
+                query=query,
+                k=k,
+                kb_info=kb.info(),
                 details={"k": k},
             )
 
-        # 2) 实际搜索：兜底异常
+        # 2) Actual search with exception safety
         try:
             hits = kb.search(query, k=k)
-            payload: KBSearchResult = {
+            payload = {
                 "query": query,
                 "k": k,
                 "kb": kb.info(),
@@ -76,6 +130,9 @@ def make_kb_search_tool() -> StructuredTool:
             return _fail(
                 err_type="kb_search.runtime_error",
                 message=str(e) or e.__class__.__name__,
+                query=query,
+                k=k,
+                kb_info=kb.info(),
                 details={
                     "exception_class": e.__class__.__name__,
                     "traceback": traceback.format_exc(),
