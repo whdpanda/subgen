@@ -1,3 +1,4 @@
+# src/subgen/agent/runtime.py
 from __future__ import annotations
 
 import argparse
@@ -15,10 +16,19 @@ try:
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
     from langchain_core.tools import StructuredTool
 
-    from subgen.agent.tools.tool_names import RUN_SUBGEN_PIPELINE, BURN_SUBTITLES, KB_SEARCH
+    from subgen.agent.tools.tool_names import (
+        RUN_SUBGEN_PIPELINE,
+        BURN_SUBTITLES,
+        KB_SEARCH,
+        QUALITY_CHECK_SUBTITLES,
+        FIX_SUBTITLES,
+    )
     from subgen.agent.tools.pipeline_tool import run_subgen_pipeline_tool, PipelineToolArgs
     from subgen.agent.tools.burn_subtitles_tool import burn_subtitles_tool, BurnToolArgs
     from subgen.agent.tools.kb_search_tool import make_kb_search_tool
+
+    from subgen.agent.tools.quality_tool import quality_check_subtitles_tool, QualityToolArgs
+    from subgen.agent.tools.fix_tool import fix_subtitles_tool, FixToolArgs
 except ImportError as e:
     raise SystemExit(
         "[subgen] Missing optional dependencies for Agent/RAG runtime.\n"
@@ -33,11 +43,14 @@ Primary goals:
 1) Generate subtitles (SRT) for a given video.
 2) Optionally burn subtitles into the video (hard-sub) when the user asks.
 
-Rules:
+Rules (STRICT):
 - If you are uncertain about tool args, output schema, defaults, or how to call tools,
   you MUST call kb_search first.
 - If the user asks to generate subtitles, you MUST call run_subgen_pipeline.
-- If the user asks to burn subtitles into video, you MUST call burn_subtitles.
+- After ANY successful subtitle generation, you MUST call quality_check_subtitles on the chosen SRT.
+- If quality_check_subtitles reports violations, you MUST call fix_subtitles and then re-run quality_check_subtitles.
+- Repeat fix -> check until it passes OR you reach max_passes.
+- If the user asks to burn subtitles into video, you MUST call burn_subtitles AFTER the subtitles pass quality (or best-effort if you hit max_passes).
 - Always return output file path(s) from tool outputs ONLY.
 - Do NOT hallucinate file paths.
 
@@ -153,7 +166,6 @@ def _flat_fail_burn(err_type: str, message: str, details: dict[str, Any], tool_a
 
 
 def _flat_fail_kb(err_type: str, message: str, details: dict[str, Any], tool_args: dict[str, Any]) -> dict[str, Any]:
-    # best-effort; your kb tool通常返回 {"query","k","kb","results"} 之类
     return {
         "ok": False,
         "query": tool_args.get("query"),
@@ -164,26 +176,49 @@ def _flat_fail_kb(err_type: str, message: str, details: dict[str, Any], tool_arg
     }
 
 
+def _flat_fail_quality(err_type: str, message: str, details: dict[str, Any], tool_args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "report_path": None,
+        "report": None,
+        "summary": None,
+        "meta": {
+            "error": {"type": err_type, "message": message, "details": details},
+            "input": tool_args,
+        },
+    }
+
+
+def _flat_fail_fix(err_type: str, message: str, details: dict[str, Any], tool_args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "fixed_srt_path": None,
+        "quality_before_path": None,
+        "quality_after_path": None,
+        "changed": False,
+        "actions": [],
+        "meta": {
+            "error": {"type": err_type, "message": message, "details": details},
+            "input": tool_args,
+        },
+    }
+
+
 FAIL_BUILDERS: dict[str, Callable[[str, str, dict[str, Any], dict[str, Any]], dict[str, Any]]] = {
     RUN_SUBGEN_PIPELINE: _flat_fail_pipeline,
     BURN_SUBTITLES: _flat_fail_burn,
     KB_SEARCH: _flat_fail_kb,
+    QUALITY_CHECK_SUBTITLES: _flat_fail_quality,
+    FIX_SUBTITLES: _flat_fail_fix,
 }
 
 
 def _flatten_envelope_for_llm(tool_name: str, env: dict[str, Any]) -> dict[str, Any]:
-    """
-    Convert legacy envelope {"ok","data","error"} into flat schema for LLM, best-effort.
-    Rule:
-      - if data is a dict => return data plus ok; if error exists, put into meta.error
-      - else => fallback to tool-specific fail builder
-    """
     ok = bool(env.get("ok"))
     data = env.get("data")
     err = env.get("error")
 
     if isinstance(data, dict):
-        # Ensure ok is present at top-level (some legacy data may not contain it)
         out = dict(data)
         out["ok"] = ok
 
@@ -195,7 +230,6 @@ def _flatten_envelope_for_llm(tool_name: str, env: dict[str, Any]) -> dict[str, 
             out["meta"] = meta
         return out
 
-    # If not dict, fallback
     builder = FAIL_BUILDERS.get(tool_name)
     if builder:
         return builder(
@@ -236,7 +270,16 @@ def _safe_tool_invoke_flat_for_llm(tool: StructuredTool, tool_name: str, tool_ar
                 {"errors": e.errors()},
                 tool_args,
             )
-        return {"ok": False, "meta": {"error": {"type": f"{tool_name}.validation_error", "message": "validation failed", "details": {"errors": e.errors(), "args": tool_args}}}}
+        return {
+            "ok": False,
+            "meta": {
+                "error": {
+                    "type": f"{tool_name}.validation_error",
+                    "message": "validation failed",
+                    "details": {"errors": e.errors(), "args": tool_args},
+                }
+            },
+        }
 
     except Exception as e:
         builder = FAIL_BUILDERS.get(tool_name)
@@ -252,7 +295,16 @@ def _safe_tool_invoke_flat_for_llm(tool: StructuredTool, tool_name: str, tool_ar
                 details,
                 tool_args,
             )
-        return {"ok": False, "meta": {"error": {"type": f"{tool_name}.invoke_error", "message": str(e) or e.__class__.__name__, "details": details}}}
+        return {
+            "ok": False,
+            "meta": {
+                "error": {
+                    "type": f"{tool_name}.invoke_error",
+                    "message": str(e) or e.__class__.__name__,
+                    "details": details,
+                }
+            },
+        }
 
 
 def _assert_tool_name(tool: Any, expected: str, label: str) -> None:
@@ -269,6 +321,10 @@ def build_tools() -> List[StructuredTool]:
       - kb_search
       - run_subgen_pipeline
       - burn_subtitles
+
+    PR#4 tools:
+      - quality_check_subtitles
+      - fix_subtitles
     """
     kb_tool = make_kb_search_tool()
     _assert_tool_name(kb_tool, KB_SEARCH, "kb_search")
@@ -286,6 +342,30 @@ def build_tools() -> List[StructuredTool]:
     )
     _assert_tool_name(pipeline_tool, RUN_SUBGEN_PIPELINE, "run_subgen_pipeline")
 
+    quality_tool = StructuredTool.from_function(
+        name=QUALITY_CHECK_SUBTITLES,
+        description=(
+            "Check subtitle quality for an SRT file and write quality_report.json. "
+            "Inputs: srt_path, profile, thresholds (max_cps/max_line_len/max_lines/min_dur_ms/max_dur_ms/max_overlap_ms), out_dir(optional). "
+            "Returns: ok, report_path, report, summary, meta (flat schema)."
+        ),
+        func=quality_check_subtitles_tool,
+        args_schema=QualityToolArgs,
+    )
+    _assert_tool_name(quality_tool, QUALITY_CHECK_SUBTITLES, "quality_check_subtitles")
+
+    fix_tool = StructuredTool.from_function(
+        name=FIX_SUBTITLES,
+        description=(
+            "Deterministically fix common subtitle issues (overlap + wrapping) and re-check quality. "
+            "Inputs: srt_path, profile, thresholds, max_passes, out_path(optional), out_dir(optional). "
+            "Returns: ok, fixed_srt_path, quality_before_path, quality_after_path, changed, actions, meta (flat schema)."
+        ),
+        func=fix_subtitles_tool,
+        args_schema=FixToolArgs,
+    )
+    _assert_tool_name(fix_tool, FIX_SUBTITLES, "fix_subtitles")
+
     burn_tool = StructuredTool.from_function(
         name=BURN_SUBTITLES,
         description=(
@@ -298,7 +378,7 @@ def build_tools() -> List[StructuredTool]:
     )
     _assert_tool_name(burn_tool, BURN_SUBTITLES, "burn_subtitles")
 
-    tools = [kb_tool, pipeline_tool, burn_tool]
+    tools = [kb_tool, pipeline_tool, quality_tool, fix_tool, burn_tool]
 
     names = [t.name for t in tools]
     if len(set(names)) != len(names):
@@ -325,7 +405,8 @@ def main() -> None:
         HumanMessage(content=args.query),
     ]
 
-    for _ in range(8):
+    # PR#4b: allow more steps for fix->check loops
+    for _ in range(12):
         ai_msg = llm_with_tools.invoke(messages)
 
         tool_calls = _extract_tool_calls(ai_msg)
@@ -340,8 +421,16 @@ def main() -> None:
 
                 tool = tool_map.get(name)
                 if tool is None:
-                    # Unknown tool call should NOT crash the whole runtime
-                    flat = {"ok": False, "meta": {"error": {"type": "runtime.unknown_tool", "message": f"Unknown tool called: {name}", "details": {"available": list(tool_map.keys())}}}}
+                    flat = {
+                        "ok": False,
+                        "meta": {
+                            "error": {
+                                "type": "runtime.unknown_tool",
+                                "message": f"Unknown tool called: {name}",
+                                "details": {"available": list(tool_map.keys())},
+                            }
+                        },
+                    }
                 else:
                     tool_args: Dict[str, Any] = call.get("args") or {}
                     if not isinstance(tool_args, dict):
@@ -349,11 +438,15 @@ def main() -> None:
 
                     flat = _safe_tool_invoke_flat_for_llm(tool, tool_name=name or "unknown", tool_args=tool_args)
 
-                # (Optional) runtime-side envelope for printing/logging only
                 if args.debug_envelope:
-                    print("[DEBUG] tool_result_enveloped_for_logs:", json.dumps(_ok(flat) if flat.get("ok") else _fail("tool.failed", "see data", {"data": flat}), ensure_ascii=False))
+                    print(
+                        "[DEBUG] tool_result_enveloped_for_logs:",
+                        json.dumps(
+                            _ok(flat) if flat.get("ok") else _fail("tool.failed", "see data", {"data": flat}),
+                            ensure_ascii=False,
+                        ),
+                    )
 
-                # Feed FLAT result to LLM
                 messages.append(
                     ToolMessage(
                         tool_call_id=call_id,
@@ -362,7 +455,6 @@ def main() -> None:
                 )
             continue
 
-        # No tool call => final answer
         content = getattr(ai_msg, "content", "")
         if isinstance(content, list):
             content = "\n".join([str(x) for x in content])
