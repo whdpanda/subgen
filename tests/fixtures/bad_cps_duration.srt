@@ -1,0 +1,11 @@
+1
+00:00:01,000 --> 00:00:02,000
+This is a very very very very very very very very very long line that should be wrapped.
+
+2
+00:00:01,800 --> 00:00:02,200
+OVERLAP here.
+
+3
+00:00:03,000 --> 00:00:03,300
+Hi
