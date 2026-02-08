@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from subgen.core.subtitle.srt_io import read_srt
 from subgen.core.subtitle.models import SubtitleDoc
+
 from .metrics import CueMetrics, PairMetrics, compute_cue_metrics, compute_pair_metrics
 from .violations import Severity, Violation, ViolationType
 
@@ -18,13 +19,28 @@ class QualityProfile:
     - max_overlap_ms = 0 means no overlap allowed.
     - max_line_len/max_lines: rendering constraints.
     - cps uses "reading chars" (non-whitespace) per second.
+
+    PR#4c alignment:
+    - Pipeline segmenter hard_max can be ~15-20s, so quality max_dur_ms MUST NOT be 7000ms,
+      otherwise most cues would fail and the fix loop cannot converge deterministically.
+    - Default is tuned for zh-only output readability:
+        max_line_len=18, max_lines=2
+      (If you want a different profile per language, expose profile selection in the tool layer.)
     """
     name: str = "default"
-    max_cps: float = 17.0
-    max_line_len: int = 42
-    max_lines: int = 2
-    min_dur_ms: int = 700
-    max_dur_ms: int = 7000
+
+    # reading speed
+    max_cps: float = 16.0
+
+    # layout
+    max_line_len: int = 18
+    max_lines: int = 1
+
+    # duration
+    min_dur_ms: int = 900
+    max_dur_ms: int = 6500  # PR#4c: align with segmenter hard_max (seconds -> ms)
+
+    # overlap
     max_overlap_ms: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -41,7 +57,7 @@ class QualityProfile:
 
 @dataclass
 class QualityReport:
-    version: str = "1.0"
+    version: str = "1.1"  # bump due to threshold semantics change
     srt_path: str = ""
     profile: QualityProfile = field(default_factory=QualityProfile)
     total_cues: int = 0
@@ -52,19 +68,23 @@ class QualityReport:
     def summary(self) -> Dict[str, Any]:
         by_type: Dict[str, int] = {}
         major = 0
+        minor = 0
         for v in self.violations:
             by_type[v.type.value] = by_type.get(v.type.value, 0) + 1
             if v.severity == Severity.MAJOR:
                 major += 1
+            else:
+                minor += 1
         return {
             "total_cues": self.total_cues,
             "violation_count": len(self.violations),
             "major_count": major,
+            "minor_count": minor,
             "by_type": by_type,
         }
 
     def ok(self) -> bool:
-        # For MVP: no major violations means pass.
+        # Gate: no MAJOR violations means pass.
         return all(v.severity != Severity.MAJOR for v in self.violations)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -83,16 +103,24 @@ class QualityReport:
 
 
 def _severity_for(vtype: ViolationType) -> Severity:
-    # MVP: treat these as MAJOR; adjust later if you want minor/major gates.
-    if vtype in {
+    """
+    PR#4c convergence rule:
+    - A violation should be MAJOR only if our deterministic fixers are expected
+      to handle it (or it is truly fatal).
+    - Violations that we currently do NOT fix deterministically should not block
+      the loop forever (mark as MINOR).
+    """
+    major = {
         ViolationType.OVERLAP,
         ViolationType.TOO_FAST_CPS,
         ViolationType.BAD_TIMECODE_ORDER,
         ViolationType.EMPTY_TEXT,
-    }:
-        return Severity.MAJOR
-    # Layout constraints can be MAJOR too; keep consistent for now.
-    return Severity.MAJOR
+        ViolationType.LINE_TOO_LONG,
+        ViolationType.TOO_MANY_LINES,
+        ViolationType.TOO_SHORT_DURATION,
+        # NOTE: TOO_LONG_DURATION is intentionally MINOR by default (no deterministic splitter yet)
+    }
+    return Severity.MAJOR if vtype in major else Severity.MINOR
 
 
 def quality_check_doc(doc: SubtitleDoc, profile: QualityProfile) -> QualityReport:
@@ -121,6 +149,7 @@ def quality_check_doc(doc: SubtitleDoc, profile: QualityProfile) -> QualityRepor
     # Per-cue checks
     for m in cue_m:
         cue = doc.cues[m.cue_index]
+
         if cue.text.strip() == "":
             violations.append(
                 Violation(
@@ -169,7 +198,12 @@ def quality_check_doc(doc: SubtitleDoc, profile: QualityProfile) -> QualityRepor
                     start_ms=m.start_ms,
                     end_ms=m.end_ms,
                     message=f"CPS {m.cps:.2f} > max {profile.max_cps}",
-                    data={"cps": m.cps, "max_cps": profile.max_cps, "char_count": m.char_count, "dur_ms": m.duration_ms},
+                    data={
+                        "cps": m.cps,
+                        "max_cps": profile.max_cps,
+                        "char_count": m.char_count,
+                        "dur_ms": m.duration_ms,
+                    },
                 )
             )
 

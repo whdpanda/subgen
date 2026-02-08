@@ -1,8 +1,9 @@
-# src/subgen/agent/tools/fix_tool.py
+# src/subgen/agent/tools/fix_subtitles_tool.py
 from __future__ import annotations
 
 import json
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -17,11 +18,11 @@ class FixToolArgs(BaseModel):
     srt_path: Path = Field(..., description="Input SRT path")
 
     profile: str = Field("default", description="Quality profile name")
-    max_cps: float = Field(17.0, description="Max chars-per-second")
-    max_line_len: int = Field(42, description="Max line length")
-    max_lines: int = Field(2, description="Max number of lines")
-    min_dur_ms: int = Field(700, description="Min cue duration ms")
-    max_dur_ms: int = Field(7000, description="Max cue duration ms")
+    max_cps: float = Field(16.0, description="Max chars-per-second")
+    max_line_len: int = Field(18, description="Max line length")
+    max_lines: int = Field(1, description="Max number of lines")
+    min_dur_ms: int = Field(900, description="Min cue duration ms")
+    max_dur_ms: int = Field(6500, description="Max cue duration ms")
     max_overlap_ms: int = Field(0, description="Max allowed overlap ms")
 
     max_passes: int = Field(2, description="Max fix passes (core deterministic)")
@@ -53,6 +54,36 @@ def _mk_profile_from_args(name: str, args: FixToolArgs) -> QualityProfile:
         max_dur_ms=int(args.max_dur_ms),
         max_overlap_ms=int(args.max_overlap_ms),
     )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_out_dir(srt_path_resolved: Path, requested_out_dir: Optional[Path]) -> Path:
+    if requested_out_dir is not None:
+        out_dir = requested_out_dir
+        out_dir = out_dir if out_dir.is_absolute() else (Path.cwd() / out_dir).resolve()
+    else:
+        out_dir = srt_path_resolved.parent.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _default_fixed_path(out_dir: Path, srt_path_resolved: Path) -> Path:
+    return (out_dir / f"{srt_path_resolved.stem}.fixed.srt").resolve()
+
+
+def _before_json_path(out_dir: Path, srt_path_resolved: Path) -> Path:
+    return (out_dir / f"{srt_path_resolved.stem}.quality_before.json").resolve()
+
+
+def _after_json_path(out_dir: Path, srt_path_resolved: Path) -> Path:
+    return (out_dir / f"{srt_path_resolved.stem}.quality_after.json").resolve()
+
+
+def _after_error_json_path(out_dir: Path, srt_path_resolved: Path) -> Path:
+    return (out_dir / f"{srt_path_resolved.stem}.quality_after_error.json").resolve()
 
 
 def _fail_flat(
@@ -89,9 +120,9 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     Flat schema (NO envelope):
       {"ok","fixed_srt_path","quality_before_path","quality_after_path","changed","actions","meta"}
 
-    - ok: True if fixed output passes quality_check
-    - actions: deterministic fix actions emitted by core fix pipeline
-    - meta: includes before/after summary and on failure meta["error"]
+    PR#4c best-effort:
+      - If input exists but fixing fails, return fixed_srt_path=input path (real path, not hallucinated)
+      - Try to write before/after quality json; if after cannot be computed, write an error-json and return its path.
     """
     # 1) Parse / validate args (never raise)
     try:
@@ -126,51 +157,61 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     # 3) Build profile
     try:
         profile = _mk_profile_from_args(args.profile, args)
+        profile_dict = profile.to_dict()
     except Exception as e:
         return _fail_flat(
             err_type="fix.profile_error",
             message=str(e) or e.__class__.__name__,
             details={"exception_class": e.__class__.__name__, "traceback": traceback.format_exc()},
+            fixed_srt_path=str(srt_path),  # best-effort: return existing input
             meta={"input_srt_path": str(srt_path), "profile": args.profile},
         )
 
     # 4) Resolve output dir/path
     try:
-        out_dir = args.out_dir if args.out_dir is not None else srt_path.parent
-        out_dir = out_dir if out_dir.is_absolute() else (Path.cwd() / out_dir).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = _resolve_out_dir(srt_path, args.out_dir)
 
         if args.out_path is None:
-            fixed_path = (out_dir / f"{srt_path.stem}.fixed.srt").resolve()
+            fixed_path = _default_fixed_path(out_dir, srt_path)
         else:
             fixed_path = args.out_path if args.out_path.is_absolute() else (Path.cwd() / args.out_path).resolve()
+
+        before_path = _before_json_path(out_dir, srt_path)
+        after_path = _after_json_path(out_dir, srt_path)
+        after_err_path = _after_error_json_path(out_dir, srt_path)
     except Exception as e:
         return _fail_flat(
             err_type="fix.output_path_error",
             message=str(e) or e.__class__.__name__,
             details={"exception_class": e.__class__.__name__, "traceback": traceback.format_exc()},
-            meta={"input_srt_path": str(srt_path), "profile": profile.to_dict()},
+            fixed_srt_path=str(srt_path),  # best-effort
+            meta={"input_srt_path": str(srt_path), "profile": profile_dict},
         )
 
     # 5) Fix (deterministic) + before/after reports
-    try:
-        before_rep = quality_check_srt(str(srt_path), profile)
+    actions: list[dict[str, Any]] = []
+    changed = False
 
+    try:
+        # Before report (best-effort write)
+        before_rep = quality_check_srt(str(srt_path), profile)
+        before_path.write_text(json.dumps(before_rep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # Apply fixes
         doc = read_srt(srt_path).sorted()
         budget = FixBudget(max_passes=int(max(0, args.max_passes)))
         res = apply_fixes(doc, profile, budget=budget)
 
+        # Write fixed srt
         write_srt(res.fixed_doc, fixed_path)
 
-        after_rep = quality_check_srt(str(fixed_path), profile)
-
-        before_path = (out_dir / "quality_before.json").resolve()
-        after_path = (out_dir / "quality_after.json").resolve()
-        before_path.write_text(json.dumps(before_rep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        after_path.write_text(json.dumps(after_rep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-
+        # Actions
         actions = [a.to_dict() for a in res.actions]
         changed = len(actions) > 0
+
+        # After report
+        after_rep = quality_check_srt(str(fixed_path), profile)
+        after_path.write_text(json.dumps(after_rep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
         return {
             "ok": after_rep.ok(),
@@ -181,16 +222,45 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
             "actions": actions,
             "meta": {
                 "input_srt_path": str(srt_path),
-                "profile": profile.to_dict(),
+                "profile": profile_dict,
                 "passes": res.passes,
                 "before_summary": before_rep.summary(),
                 "after_summary": after_rep.summary(),
             },
         }
+
     except Exception as e:
+        # best-effort: if fixed_path exists, use it; else fallback to input
+        fallback_fixed = fixed_path if (fixed_path is not None and fixed_path.exists()) else srt_path
+
+        # best-effort: write after_error report so caller still gets a real path
+        try:
+            after_error_payload = {
+                "ts": _now_iso(),
+                "ok": False,
+                "kind": "fix_after_error",
+                "input_srt_path": str(srt_path),
+                "fixed_srt_path": str(fallback_fixed),
+                "profile": profile_dict,
+                "error": {
+                    "type": "fix.runtime_error",
+                    "message": str(e) or e.__class__.__name__,
+                    "details": {"exception_class": e.__class__.__name__, "traceback": traceback.format_exc()},
+                },
+            }
+            after_err_path.write_text(json.dumps(after_error_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            qa_path: Union[str, Path] = after_err_path
+        except Exception:
+            qa_path = None  # last resort
+
         return _fail_flat(
             err_type="fix.runtime_error",
             message=str(e) or e.__class__.__name__,
             details={"exception_class": e.__class__.__name__, "traceback": traceback.format_exc()},
-            meta={"input_srt_path": str(srt_path), "fixed_srt_path": str(fixed_path), "profile": profile.to_dict()},
+            fixed_srt_path=str(fallback_fixed),
+            quality_before_path=str(before_path) if before_path.exists() else None,
+            quality_after_path=str(qa_path) if qa_path is not None else None,
+            changed=changed,
+            actions=actions,
+            meta={"input_srt_path": str(srt_path), "fixed_srt_path": str(fallback_fixed), "profile": profile_dict},
         )

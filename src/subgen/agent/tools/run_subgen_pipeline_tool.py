@@ -17,7 +17,7 @@ class PipelineToolArgs(BaseModel):
 
     # language
     language: str = Field("auto", description="Source language or 'auto'")
-    target_lang: str = Field("zh", description="Target language")
+    target_lang: str = Field("zh", description="Target language (default: zh)")
     glossary_path: Optional[Path] = Field(None, description="Optional glossary json path")
 
     # Audio preprocess
@@ -48,8 +48,14 @@ class PipelineToolArgs(BaseModel):
     translator_device: str = Field("cuda", description="cuda/cpu/auto")
     openai_translate_model: str = Field("gpt-5.2", description="OpenAI model for translation")
 
-    # Output
-    emit: str = Field("bilingual-only", description="all/literal/bilingual-only/bilingual/none")
+    # Output (PR#4c default: Chinese mono SRT)
+    emit: str = Field("zh-only", description="zh-only/all/literal/bilingual-only/bilingual/none")
+
+    # PR#4c: Chinese layout/segmentation (best-effort; only passed if PipelineConfig supports)
+    zh_layout: bool = Field(True, description="Apply Chinese layout/line-wrapping postprocess when supported")
+    zh_max_line_len: int = Field(18, description="Preferred max line length for Chinese layout when supported")
+    zh_max_lines: int = Field(2, description="Max lines per cue for Chinese layout when supported")
+    zh_line_len_cap: int = Field(42, description="Hard cap line length for Chinese layout when supported")
 
     # Cache & dumps
     use_cache: bool = Field(True, description="Enable ASR cache")
@@ -128,6 +134,29 @@ def _fail_flat(
     }
 
 
+def _pipelineconfig_supports(field_name: str) -> bool:
+    """
+    Best-effort: only pass new args (e.g., zh_layout) when PipelineConfig defines them.
+    Works for dataclass and pydantic models.
+    """
+    # dataclass
+    fields = getattr(PipelineConfig, "__dataclass_fields__", None)
+    if isinstance(fields, dict) and field_name in fields:
+        return True
+
+    # pydantic v2
+    model_fields = getattr(PipelineConfig, "model_fields", None)
+    if isinstance(model_fields, dict) and field_name in model_fields:
+        return True
+
+    # pydantic v1
+    __fields__ = getattr(PipelineConfig, "__fields__", None)
+    if isinstance(__fields__, dict) and field_name in __fields__:
+        return True
+
+    return False
+
+
 def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
     """
     Tool entrypoint for LangChain StructuredTool.
@@ -159,7 +188,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
 
     # 2) Build config (never raise)
     try:
-        cfg = PipelineConfig(
+        cfg_kwargs: dict[str, Any] = dict(
             video_path=args.video_path,
             out_dir=args.out_dir,
             job_id=args.job_id,
@@ -189,6 +218,18 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             use_cache=args.use_cache,
             dump_intermediates=args.dump_intermediates,
         )
+
+        # PR#4c: only pass zh layout knobs if PipelineConfig supports them
+        if _pipelineconfig_supports("zh_layout"):
+            cfg_kwargs["zh_layout"] = args.zh_layout
+        if _pipelineconfig_supports("zh_max_line_len"):
+            cfg_kwargs["zh_max_line_len"] = args.zh_max_line_len
+        if _pipelineconfig_supports("zh_max_lines"):
+            cfg_kwargs["zh_max_lines"] = args.zh_max_lines
+        if _pipelineconfig_supports("zh_line_len_cap"):
+            cfg_kwargs["zh_line_len_cap"] = args.zh_line_len_cap
+
+        cfg = PipelineConfig(**cfg_kwargs)  # type: ignore[arg-type]
     except Exception as e:
         return _fail_flat(
             err_type="pipeline.config_build_error",
@@ -231,16 +272,20 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             },
         )
 
-    # 4) Build outputs payload
+    # 4) Build outputs payload (prefer res.outputs; fallback to artifacts)
     outputs: dict[str, str] = {}
     if hasattr(res, "outputs") and getattr(res, "outputs") is not None:
         for k, v in res.outputs.items():  # type: ignore[attr-defined]
             outputs[k] = str(v)
 
     artifacts = res.artifacts or {}
+
+    # Fallback keys (only if tool really returned them in artifacts)
+    # NOTE: include PR#4c mono keys as well.
     if not outputs:
         for k in (
             "primary_path",
+            "mono_srt_path",
             "bilingual_srt_path",
             "literal_srt_path",
             "src_json_path",

@@ -10,6 +10,7 @@ from subgen.core.audio.extract import extract_audio
 from subgen.core.asr.local_whisper import LocalWhisperASR
 from subgen.core.align.noop import NoopAlign
 from subgen.core.postprocess.punct_split import split_segments_on_sentence_end_punct
+from subgen.core.postprocess.zh_layout import apply_zh_layout  # PR#4c
 from subgen.core.translate.engine_nllb import NLLBTranslator
 from subgen.core.translate.engine_openai import OpenAITranslator
 from subgen.core.refine.glossary import load_glossary, apply_glossary
@@ -19,7 +20,7 @@ from subgen.utils.logger import get_logger
 
 from subgen.core.segment.rule import RuleSegmenter
 from subgen.core.segment.openai_segmenter import OpenAISegmenter
-from subgen.core.postprocess.repair import repair_segments_with_tail_listen
+from subgen.core.quality.fixers import repair_segments_with_tail_listen
 from subgen.core.postprocess.coalesce import coalesce_segments
 
 from subgen.core_types import Transcript
@@ -64,18 +65,25 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     # Pre-compute output paths (even if not emitted), so downstream tools don't guess filenames.
     src_json_path = cfg.out_dir / f"{basename}.src.json"
     literal_json_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.literal.json"
+
+    # Legacy name kept for compatibility/tests
     literal_srt_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.literal.srt"
     bilingual_srt_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.bilingual.srt"
+
+    # PR#4c: new canonical mono SRT name (no ".literal" suffix)
+    mono_srt_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.srt"
 
     artifacts["src_json_path"] = str(src_json_path)
     artifacts["literal_json_path"] = str(literal_json_path)
     artifacts["literal_srt_path"] = str(literal_srt_path)
     artifacts["bilingual_srt_path"] = str(bilingual_srt_path)
+    artifacts["mono_srt_path"] = str(mono_srt_path)
 
     outputs["src_json"] = src_json_path
     outputs["literal_json"] = literal_json_path
     outputs["literal_srt"] = literal_srt_path
     outputs["bilingual_srt"] = bilingual_srt_path
+    outputs["mono_srt"] = mono_srt_path
 
     # 1) audio
     audio = extract_audio(
@@ -217,6 +225,23 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
         zh_literal = apply_glossary(zh_literal, glossary)
         artifacts["glossary_path"] = str(cfg.glossary_path)
 
+    # PR#4c: Chinese layout (line wrapping) before export
+    if cfg.zh_layout and str(cfg.target_lang).lower().startswith("zh"):
+        zh_literal = apply_zh_layout(
+            zh_literal,
+            max_line_len=int(cfg.zh_max_line_len),
+            max_lines=int(cfg.zh_max_lines),
+            line_len_cap=int(cfg.zh_line_len_cap),
+        )
+        artifacts["zh_layout"] = True
+        artifacts["zh_layout_params"] = {
+            "max_line_len": int(cfg.zh_max_line_len),
+            "max_lines": int(cfg.zh_max_lines),
+            "line_len_cap": int(cfg.zh_line_len_cap),
+        }
+    else:
+        artifacts["zh_layout"] = False
+
     # 8) dumps
     if cfg.dump_intermediates:
         src_json_path.write_text(
@@ -232,7 +257,15 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     srt_paths: list[Path] = []
     primary_path: Optional[Path] = None
 
-    if cfg.emit in ("all", "literal"):
+    # PR#4c: zh-only -> write mono_srt_path
+    if cfg.emit in ("zh-only", "all"):
+        mono_srt_path.write_text(to_srt(zh_literal), encoding="utf-8")
+        logger.info("Generated -> %s", mono_srt_path.name)
+        srt_paths.append(mono_srt_path)
+        primary_path = mono_srt_path
+
+    # Legacy literal mode retained: writes ".literal.srt"
+    if cfg.emit == "literal":
         literal_srt_path.write_text(to_srt(zh_literal), encoding="utf-8")
         logger.info("Generated -> %s", literal_srt_path.name)
         srt_paths.append(literal_srt_path)
@@ -247,8 +280,16 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     if cfg.emit == "none":
         primary_path = literal_json_path
 
+    # Safe fallback: choose something that would have been generated for the mode
     if primary_path is None:
-        primary_path = bilingual_srt_path
+        if cfg.emit in ("bilingual", "bilingual-only"):
+            primary_path = bilingual_srt_path
+        elif cfg.emit in ("literal",):
+            primary_path = literal_srt_path
+        elif cfg.emit in ("zh-only", "all"):
+            primary_path = mono_srt_path
+        else:
+            primary_path = literal_json_path
 
     outputs["primary"] = primary_path
 

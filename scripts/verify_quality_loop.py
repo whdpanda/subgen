@@ -76,11 +76,11 @@ def main() -> None:
     # 1) Quality profile（你的默认阈值）
     profile = QualityProfile(
         name="verify",
-        max_cps=17.0,
-        max_line_len=42,
-        max_lines=2,
-        min_dur_ms=700,
-        max_dur_ms=7000,
+        max_cps=16.0,
+        max_line_len=18,
+        max_lines=1,
+        min_dur_ms=900,
+        max_dur_ms=6500,
         max_overlap_ms=0,
     )
 

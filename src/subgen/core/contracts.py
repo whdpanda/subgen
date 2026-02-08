@@ -8,7 +8,17 @@ from subgen.core.audio.extract import AudioPreprocess
 
 SegmenterName = Literal["rule", "openai"]
 TranslatorName = Literal["auto_non_en", "nllb", "openai"]
-EmitMode = Literal["all", "literal", "bilingual-only", "bilingual", "none"]
+
+# PR#4c:
+# - add "zh-only" as the new default emit mode (Chinese mono SRT)
+EmitMode = Literal[
+    "all",
+    "literal",
+    "zh-only",
+    "bilingual-only",
+    "bilingual",
+    "none",
+]
 
 
 @dataclass(frozen=True)
@@ -55,7 +65,14 @@ class PipelineConfig:
     openai_translate_model: str = "gpt-5.2"
 
     # Output
-    emit: EmitMode = "bilingual-only"
+    # PR#4c: default -> zh-only (Chinese mono SRT)
+    emit: EmitMode = "zh-only"
+
+    # PR#4c: apply Chinese layout/wrapping before SRT export when target_lang startswith "zh"
+    zh_layout: bool = True
+    zh_max_line_len: int = 18
+    zh_max_lines: int = 2
+    zh_line_len_cap: int = 42  # hard cap to avoid pathological lines
 
     # Cache & dumps
     use_cache: bool = True
@@ -73,8 +90,6 @@ class PipelineResult:
     srt_paths: list[Path]
 
     # Strongly-typed known outputs (stable keys for downstream tools)
-    # Example keys:
-    # - audio, asr_cache, src_json, literal_json, literal_srt, bilingual_srt, primary
     outputs: dict[str, Path]
 
     # Flexible extension fields for experiments/metrics
