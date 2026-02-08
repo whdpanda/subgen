@@ -1,30 +1,14 @@
+# src/subgen/agent/tools/burn_subtitles_tool.py
 from __future__ import annotations
 
 import traceback
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
+from subgen.agent.tools.schemas import BurnToolArgs, parse_tool_args
 from subgen.core.video.burn import burn_subtitles
-
-
-class BurnToolArgs(BaseModel):
-    video_path: Path = Field(..., description="Input video path")
-    srt_path: Path = Field(..., description="Subtitle SRT path to burn-in")
-    out_path: Optional[Path] = Field(
-        None, description="Output video path (mp4). If omitted, auto-generate."
-    )
-
-    ffmpeg_bin: str = Field("ffmpeg", description="ffmpeg binary name/path")
-    force_style: Optional[str] = Field(None, description="ASS force_style string")
-
-    crf: int = Field(18, description="x264 CRF")
-    preset: str = Field("veryfast", description="x264 preset")
-
-    copy_audio: bool = Field(False, description="Copy audio stream if possible")
-    audio_codec: str = Field("aac", description="Audio codec when not copying")
-    audio_bitrate: str = Field("192k", description="Audio bitrate when encoding")
 
 
 # -------------------------
@@ -35,15 +19,6 @@ def _safe_str_dict(d: dict[str, Any]) -> dict[str, Any]:
     for k, v in d.items():
         out[k] = str(v) if isinstance(v, Path) else v
     return out
-
-
-def _parse_tool_args(args_or_kwargs: Union[BurnToolArgs, dict[str, Any]]) -> BurnToolArgs:
-    if isinstance(args_or_kwargs, BurnToolArgs):
-        return args_or_kwargs
-
-    if hasattr(BurnToolArgs, "model_validate"):
-        return BurnToolArgs.model_validate(args_or_kwargs)  # type: ignore[attr-defined]
-    return BurnToolArgs(**args_or_kwargs)
 
 
 def _resolve_path(p: Path) -> Path:
@@ -115,7 +90,7 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     """
     # 1) Parse / validate args
     try:
-        args = _parse_tool_args(kwargs)
+        args = parse_tool_args(BurnToolArgs, kwargs)
     except ValidationError as e:
         return _fail_flat(
             err_type="burn.validation_error",
