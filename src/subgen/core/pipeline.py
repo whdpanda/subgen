@@ -10,7 +10,7 @@ from subgen.core.audio.extract import extract_audio
 from subgen.core.asr.local_whisper import LocalWhisperASR
 from subgen.core.align.noop import NoopAlign
 from subgen.core.postprocess.punct_split import split_segments_on_sentence_end_punct
-from subgen.core.postprocess.zh_layout import apply_zh_layout  # PR#4c
+from subgen.core.postprocess.zh_layout import apply_zh_layout_split_to_cues  # UPDATED: split-to-cues
 from subgen.core.translate.engine_nllb import NLLBTranslator
 from subgen.core.translate.engine_openai import OpenAITranslator
 from subgen.core.refine.glossary import load_glossary, apply_glossary
@@ -225,15 +225,16 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
         zh_literal = apply_glossary(zh_literal, glossary)
         artifacts["glossary_path"] = str(cfg.glossary_path)
 
-    # PR#4c: Chinese layout (line wrapping) before export
+    # UPDATED: Chinese layout -> split into multiple cues and re-allocate timestamps
     if cfg.zh_layout and str(cfg.target_lang).lower().startswith("zh"):
-        zh_literal = apply_zh_layout(
+        zh_literal = apply_zh_layout_split_to_cues(
             zh_literal,
             max_line_len=int(cfg.zh_max_line_len),
             max_lines=int(cfg.zh_max_lines),
             line_len_cap=int(cfg.zh_line_len_cap),
         )
         artifacts["zh_layout"] = True
+        artifacts["zh_layout_mode"] = "split_to_cues"
         artifacts["zh_layout_params"] = {
             "max_line_len": int(cfg.zh_max_line_len),
             "max_lines": int(cfg.zh_max_lines),

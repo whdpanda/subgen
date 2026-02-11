@@ -16,20 +16,41 @@ from subgen.core.quality.report import quality_check_srt
 from subgen.core.subtitle.srt_io import read_srt, write_srt
 
 
+_FIXED_SUFFIX = ".fixed"
+
+
+def _stable_base_stem(srt_path_resolved: Path) -> str:
+    """
+    Make the output basename stable across repeated fixing.
+    Example:
+      - input:  a.srt        -> base: a
+      - input:  a.fixed.srt  -> base: a
+      - input:  a.fixed.fixed.srt -> base: a
+    """
+    stem = srt_path_resolved.stem
+    while stem.endswith(_FIXED_SUFFIX):
+        stem = stem[: -len(_FIXED_SUFFIX)]
+    return stem
+
+
 def _default_fixed_path(out_dir: Path, srt_path_resolved: Path) -> Path:
-    return (out_dir / f"{srt_path_resolved.stem}.fixed.srt").resolve()
+    base = _stable_base_stem(srt_path_resolved)
+    return (out_dir / f"{base}.fixed.srt").resolve()
 
 
 def _before_json_path(out_dir: Path, srt_path_resolved: Path) -> Path:
-    return (out_dir / f"{srt_path_resolved.stem}.quality_before.json").resolve()
+    base = _stable_base_stem(srt_path_resolved)
+    return (out_dir / f"{base}.quality_before.json").resolve()
 
 
 def _after_json_path(out_dir: Path, srt_path_resolved: Path) -> Path:
-    return (out_dir / f"{srt_path_resolved.stem}.quality_after.json").resolve()
+    base = _stable_base_stem(srt_path_resolved)
+    return (out_dir / f"{base}.quality_after.json").resolve()
 
 
 def _after_error_json_path(out_dir: Path, srt_path_resolved: Path) -> Path:
-    return (out_dir / f"{srt_path_resolved.stem}.quality_after_error.json").resolve()
+    base = _stable_base_stem(srt_path_resolved)
+    return (out_dir / f"{base}.quality_after_error.json").resolve()
 
 
 def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
@@ -115,6 +136,7 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     try:
         out_dir = resolve_out_dir(requested_out_dir=args.out_dir, fallback_parent=srt_path.parent)
 
+        # ✅ Stable target path: never stack suffix on repeated fixes (overwrite)
         if args.out_path is None:
             fixed_path = _default_fixed_path(out_dir, srt_path)
         else:
@@ -123,6 +145,10 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
         before_path = _before_json_path(out_dir, srt_path)
         after_path = _after_json_path(out_dir, srt_path)
         after_err_path = _after_error_json_path(out_dir, srt_path)
+
+        # ensure dirs exist (in case out_dir is new)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fixed_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         return fail_flat(
             base={
@@ -152,7 +178,7 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
         budget = FixBudget(max_passes=int(max(0, args.max_passes)))
         res = apply_fixes(doc, profile, budget=budget)
 
-        # Write fixed srt
+        # Write fixed srt (overwrite)
         write_srt(res.fixed_doc, fixed_path)
 
         # Actions

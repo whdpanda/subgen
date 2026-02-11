@@ -4,6 +4,7 @@ from __future__ import annotations
 import traceback
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
@@ -19,9 +20,32 @@ from subgen.utils.logger import get_logger
 logger = get_logger()
 
 
+_FIXED_SUFFIX = ".fixed"
+
+
+def _stable_base_stem_from_path(p: Path) -> str:
+    stem = p.stem
+    while stem.endswith(_FIXED_SUFFIX):
+        stem = stem[: -len(_FIXED_SUFFIX)]
+    return stem
+
+
+def _stable_fixed_out_path(initial_srt_path: str) -> str:
+    """
+    Always write fixes to ONE stable target path (overwrite), derived from the initial SRT:
+      initial: a.srt           -> a.fixed.srt
+      initial: a.fixed.srt     -> a.fixed.srt
+      initial: a.fixed.fixed.srt -> a.fixed.srt
+    """
+    p = Path(initial_srt_path).expanduser().resolve()
+    base = _stable_base_stem_from_path(p)
+    return str((p.parent / f"{base}.fixed.srt").resolve())
+
+
 @dataclass
 class QualityPass:
     """One check/fix iteration record (best-effort)."""
+
     pass_index: int
     checked_srt_path: str
     quality_ok: bool
@@ -33,6 +57,7 @@ class QualityPass:
 @dataclass
 class LoopResult:
     """Agent-facing result (paths must be tool-produced)."""
+
     ok: bool
     primary_path: Optional[str]
     srt_path: Optional[str]
@@ -46,6 +71,7 @@ class LoopResult:
 @dataclass
 class LoopConfig:
     """Runtime policy knobs for PR#4c."""
+
     max_passes: int = 3
     emit_default: str = "zh-only"
     target_lang_default: str = "zh"
@@ -73,7 +99,8 @@ def _flatten_envelope(tool_name: str, env: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ok": ok,
         "meta": {
-            "error": err or {
+            "error": err
+            or {
                 "type": f"{tool_name}.legacy_envelope_shape",
                 "message": "non-dict envelope data",
             }
@@ -156,12 +183,14 @@ def _extract_quality_counts(q_res: Dict[str, Any]) -> tuple[Optional[int], Optio
     major = summary.get("major_count") or summary.get("majors") or summary.get("major")
     minor = summary.get("minor_count") or summary.get("minors") or summary.get("minor")
     total = summary.get("violation_count") or summary.get("total")
+
     def _to_int(x: Any) -> Optional[int]:
         if isinstance(x, int):
             return x
         if isinstance(x, float):
             return int(x)
         return None
+
     return _to_int(major), _to_int(minor), _to_int(total)
 
 
@@ -185,6 +214,11 @@ def run_quality_fix_loop(
     history: List[QualityPass] = []
     current_srt = srt_path
     last_report_path: Optional[str] = None
+
+    # ✅ Pin a stable out_path for all fix passes (overwrite), derived from the initial SRT.
+    pinned_fix_args = dict(fix_args or {})
+    if not pinned_fix_args.get("out_path"):
+        pinned_fix_args["out_path"] = _stable_fixed_out_path(srt_path)
 
     q_tool = tool_map[QUALITY_CHECK_SUBTITLES]
     q_payload = {"srt_path": current_srt, **(quality_args or {})}
@@ -218,7 +252,8 @@ def run_quality_fix_loop(
     for i in range(1, cfg.max_passes + 1):
         logger.info(f"RETRY {i}/{cfg.max_passes}: reason=quality_fail -> fix_subtitles")
 
-        f_payload = {"srt_path": current_srt, **(fix_args or {})}
+        # ✅ Always pass the pinned out_path so filename never stacks suffix.
+        f_payload = {"srt_path": current_srt, **pinned_fix_args}
         f_res = safe_invoke_flat(fix_tool, FIX_SUBTITLES, f_payload)
 
         fixed_path = f_res.get("fixed_srt_path")
