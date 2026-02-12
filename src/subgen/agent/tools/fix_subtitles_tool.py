@@ -14,19 +14,14 @@ from subgen.agent.tools.tool_utils import abs_path, fail_flat, now_iso, resolve_
 from subgen.core.quality.pipeline import FixBudget, apply_fixes
 from subgen.core.quality.report import quality_check_srt
 from subgen.core.subtitle.srt_io import read_srt, write_srt
+from subgen.utils.logger import get_logger
 
+logger = get_logger("subgen")
 
 _FIXED_SUFFIX = ".fixed"
 
 
 def _stable_base_stem(srt_path_resolved: Path) -> str:
-    """
-    Make the output basename stable across repeated fixing.
-    Example:
-      - input:  a.srt        -> base: a
-      - input:  a.fixed.srt  -> base: a
-      - input:  a.fixed.fixed.srt -> base: a
-    """
     stem = srt_path_resolved.stem
     while stem.endswith(_FIXED_SUFFIX):
         stem = stem[: -len(_FIXED_SUFFIX)]
@@ -58,55 +53,39 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     Flat schema (NO envelope):
       {"ok","fixed_srt_path","quality_before_path","quality_after_path","changed","actions","meta"}
 
-    PR#4c best-effort:
-      - If input exists but fixing fails, return fixed_srt_path=input path (real path, not hallucinated)
-      - Try to write before/after quality json; if after cannot be computed, write an error-json and return its path.
+    Debug expectations:
+      - log input kwargs / resolved paths
+      - log before/after summary + action stats
+      - log stack trace on failures
     """
+    logger.debug(f"FIX_TOOL_START kwargs={ {k: str(v) for k, v in kwargs.items()} }")
+
     # 1) Parse / validate args (never raise)
     try:
         args = parse_tool_args(FixToolArgs, kwargs)
     except ValidationError as e:
+        logger.debug(f"FIX_TOOL_VALIDATION_ERROR errors={e.errors()} kwargs={kwargs}")
         return fail_flat(
-            base={
-                "fixed_srt_path": None,
-                "quality_before_path": None,
-                "quality_after_path": None,
-                "changed": False,
-                "actions": [],
-            },
+            base={"fixed_srt_path": None, "quality_before_path": None, "quality_after_path": None, "changed": False, "actions": []},
             err_type="fix.validation_error",
             message="invalid tool arguments",
             details={"errors": e.errors(), "input": {k: str(v) for k, v in kwargs.items()}},
         )
     except Exception as e:
+        logger.exception("FIX_TOOL: args parse error")
         return fail_flat(
-            base={
-                "fixed_srt_path": None,
-                "quality_before_path": None,
-                "quality_after_path": None,
-                "changed": False,
-                "actions": [],
-            },
+            base={"fixed_srt_path": None, "quality_before_path": None, "quality_after_path": None, "changed": False, "actions": []},
             err_type="fix.args_parse_error",
             message=str(e) or e.__class__.__name__,
-            details={
-                "exception_class": e.__class__.__name__,
-                "traceback": traceback.format_exc(),
-                "input": {k: str(v) for k, v in kwargs.items()},
-            },
+            details={"exception_class": e.__class__.__name__, "traceback": traceback.format_exc(), "input": {k: str(v) for k, v in kwargs.items()}},
         )
 
     # 2) Resolve input path
     srt_path = abs_path(args.srt_path)
     if not srt_path.exists():
+        logger.debug(f"FIX_TOOL_INPUT_NOT_FOUND srt={srt_path} given={args.srt_path}")
         return fail_flat(
-            base={
-                "fixed_srt_path": None,
-                "quality_before_path": None,
-                "quality_after_path": None,
-                "changed": False,
-                "actions": [],
-            },
+            base={"fixed_srt_path": None, "quality_before_path": None, "quality_after_path": None, "changed": False, "actions": []},
             err_type="fix.input_not_found",
             message="srt_path does not exist",
             details={"srt_path": str(srt_path), "given": str(args.srt_path)},
@@ -117,15 +96,11 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     try:
         profile = _mk_profile_from_args(args.profile, args)
         profile_dict = profile.to_dict()
+        logger.debug(f"FIX_TOOL_PROFILE built profile_keys={list(profile_dict.keys())}")
     except Exception as e:
+        logger.exception("FIX_TOOL: profile build error")
         return fail_flat(
-            base={
-                "fixed_srt_path": str(srt_path),  # best-effort: return existing input
-                "quality_before_path": None,
-                "quality_after_path": None,
-                "changed": False,
-                "actions": [],
-            },
+            base={"fixed_srt_path": str(srt_path), "quality_before_path": None, "quality_after_path": None, "changed": False, "actions": []},
             err_type="fix.profile_error",
             message=str(e) or e.__class__.__name__,
             details={"exception_class": e.__class__.__name__, "traceback": traceback.format_exc()},
@@ -136,7 +111,6 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
     try:
         out_dir = resolve_out_dir(requested_out_dir=args.out_dir, fallback_parent=srt_path.parent)
 
-        # ✅ Stable target path: never stack suffix on repeated fixes (overwrite)
         if args.out_path is None:
             fixed_path = _default_fixed_path(out_dir, srt_path)
         else:
@@ -146,48 +120,47 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
         after_path = _after_json_path(out_dir, srt_path)
         after_err_path = _after_error_json_path(out_dir, srt_path)
 
-        # ensure dirs exist (in case out_dir is new)
         out_dir.mkdir(parents=True, exist_ok=True)
         fixed_path.parent.mkdir(parents=True, exist_ok=True)
+
+        logger.debug(
+            f"FIX_TOOL_PATHS input={srt_path} out_dir={out_dir} fixed_path={fixed_path} "
+            f"before_json={before_path} after_json={after_path}"
+        )
     except Exception as e:
+        logger.exception("FIX_TOOL: output path resolve error")
         return fail_flat(
-            base={
-                "fixed_srt_path": str(srt_path),  # best-effort
-                "quality_before_path": None,
-                "quality_after_path": None,
-                "changed": False,
-                "actions": [],
-            },
+            base={"fixed_srt_path": str(srt_path), "quality_before_path": None, "quality_after_path": None, "changed": False, "actions": []},
             err_type="fix.output_path_error",
             message=str(e) or e.__class__.__name__,
             details={"exception_class": e.__class__.__name__, "traceback": traceback.format_exc()},
             meta={"input_srt_path": str(srt_path), "profile": profile_dict},
         )
 
-    # 5) Fix (deterministic) + before/after reports
+    # 5) Fix + reports
     actions: list[dict[str, Any]] = []
     changed = False
 
     try:
-        # Before report (best-effort write)
         before_rep = quality_check_srt(str(srt_path), profile)
         before_path.write_text(json.dumps(before_rep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
-        # Apply fixes
         doc = read_srt(srt_path).sorted()
         budget = FixBudget(max_passes=int(max(0, args.max_passes)))
         res = apply_fixes(doc, profile, budget=budget)
 
-        # Write fixed srt (overwrite)
         write_srt(res.fixed_doc, fixed_path)
 
-        # Actions
         actions = [a.to_dict() for a in res.actions]
         changed = len(actions) > 0
 
-        # After report
         after_rep = quality_check_srt(str(fixed_path), profile)
         after_path.write_text(json.dumps(after_rep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+        logger.debug(
+            f"FIX_TOOL_DONE ok={after_rep.ok()} changed={changed} actions={len(actions)} "
+            f"before_summary={before_rep.summary()} after_summary={after_rep.summary()}"
+        )
 
         return {
             "ok": after_rep.ok(),
@@ -206,10 +179,9 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
         }
 
     except Exception as e:
-        # best-effort: if fixed_path exists, use it; else fallback to input
+        logger.exception("FIX_TOOL: runtime error during fixing")
         fallback_fixed = fixed_path if (fixed_path is not None and fixed_path.exists()) else srt_path
 
-        # best-effort: write after_error report so caller still gets a real path
         try:
             after_error_payload = {
                 "ts": now_iso(),
@@ -227,7 +199,8 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
             after_err_path.write_text(json.dumps(after_error_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             qa_path: Union[str, Path] = after_err_path
         except Exception:
-            qa_path = None  # last resort
+            logger.exception("FIX_TOOL: failed to write after_error report")
+            qa_path = None
 
         return fail_flat(
             base={

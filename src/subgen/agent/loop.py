@@ -17,8 +17,7 @@ from subgen.agent.tools.tool_names import (
 )
 from subgen.utils.logger import get_logger
 
-logger = get_logger()
-
+logger = get_logger("subgen")
 
 _FIXED_SUFFIX = ".fixed"
 
@@ -33,9 +32,9 @@ def _stable_base_stem_from_path(p: Path) -> str:
 def _stable_fixed_out_path(initial_srt_path: str) -> str:
     """
     Always write fixes to ONE stable target path (overwrite), derived from the initial SRT:
-      initial: a.srt           -> a.fixed.srt
-      initial: a.fixed.srt     -> a.fixed.srt
-      initial: a.fixed.fixed.srt -> a.fixed.srt
+      initial: a.srt              -> a.fixed.srt
+      initial: a.fixed.srt        -> a.fixed.srt
+      initial: a.fixed.fixed.srt  -> a.fixed.srt
     """
     p = Path(initial_srt_path).expanduser().resolve()
     base = _stable_base_stem_from_path(p)
@@ -110,17 +109,23 @@ def _flatten_envelope(tool_name: str, env: Dict[str, Any]) -> Dict[str, Any]:
 
 def safe_invoke_flat(tool: Any, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
     try:
+        logger.debug(f"TOOL_CALL -> {tool_name} args={tool_args}")
         res = tool.invoke(tool_args)
 
         if _is_envelope(res):
-            return _flatten_envelope(tool_name, res)
+            flat = _flatten_envelope(tool_name, res)
+            logger.debug(f"TOOL_RET  <- {tool_name} ok={bool(flat.get('ok', True))} keys={list(flat.keys())}")
+            return flat
 
         if isinstance(res, dict):
+            logger.debug(f"TOOL_RET  <- {tool_name} ok={bool(res.get('ok', True))} keys={list(res.keys())}")
             return res
 
+        logger.debug(f"TOOL_RET  <- {tool_name} (non-dict) type={type(res)}")
         return {"ok": True, "result": res}
 
     except ValidationError as e:
+        logger.debug(f"TOOL_ERR  !! {tool_name} validation_error errors={e.errors()} args={tool_args}")
         return {
             "ok": False,
             "meta": {
@@ -132,6 +137,7 @@ def safe_invoke_flat(tool: Any, tool_name: str, tool_args: Dict[str, Any]) -> Di
             },
         }
     except Exception as e:
+        logger.exception(f"TOOL_ERR  !! {tool_name} invoke_error args={tool_args}")
         return {
             "ok": False,
             "meta": {
@@ -215,14 +221,16 @@ def run_quality_fix_loop(
     current_srt = srt_path
     last_report_path: Optional[str] = None
 
-    # ✅ Pin a stable out_path for all fix passes (overwrite), derived from the initial SRT.
     pinned_fix_args = dict(fix_args or {})
     if not pinned_fix_args.get("out_path"):
         pinned_fix_args["out_path"] = _stable_fixed_out_path(srt_path)
 
+    logger.debug(f"LOOP_INIT srt_path={srt_path} pinned_out_path={pinned_fix_args.get('out_path')} cfg={cfg}")
+
     q_tool = tool_map[QUALITY_CHECK_SUBTITLES]
     q_payload = {"srt_path": current_srt, **(quality_args or {})}
     q_res = safe_invoke_flat(q_tool, QUALITY_CHECK_SUBTITLES, q_payload)
+    logger.debug(f"QUALITY_RES pass=0 full={q_res}")
 
     q_ok = bool(q_res.get("ok"))
     rp = q_res.get("report_path")
@@ -252,9 +260,9 @@ def run_quality_fix_loop(
     for i in range(1, cfg.max_passes + 1):
         logger.info(f"RETRY {i}/{cfg.max_passes}: reason=quality_fail -> fix_subtitles")
 
-        # ✅ Always pass the pinned out_path so filename never stacks suffix.
         f_payload = {"srt_path": current_srt, **pinned_fix_args}
         f_res = safe_invoke_flat(fix_tool, FIX_SUBTITLES, f_payload)
+        logger.debug(f"FIX_RES pass={i} full={f_res}")
 
         fixed_path = f_res.get("fixed_srt_path")
         if isinstance(fixed_path, str) and fixed_path:
@@ -269,6 +277,7 @@ def run_quality_fix_loop(
 
         q_payload = {"srt_path": current_srt, **(quality_args or {})}
         q_res = safe_invoke_flat(q_tool, QUALITY_CHECK_SUBTITLES, q_payload)
+        logger.debug(f"QUALITY_RES pass={i} full={q_res}")
 
         q_ok = bool(q_res.get("ok"))
         rp = q_res.get("report_path")
@@ -324,11 +333,13 @@ def run_pr4c_closed_loop(
         cfg.max_passes = max_passes
 
     meta: Dict[str, Any] = {"trace_id": uuid.uuid4().hex}
+    logger.debug(f"CLOSED_LOOP_START meta={meta} pipeline_args={pipeline_args} cfg={cfg}")
 
     logger.info("PIPELINE: run_subgen_pipeline")
     p_tool = tool_map[RUN_SUBGEN_PIPELINE]
     p_args = inject_default_zh_only_pipeline_args(pipeline_args, cfg)
     p_res = safe_invoke_flat(p_tool, RUN_SUBGEN_PIPELINE, p_args)
+    logger.debug(f"PIPELINE_RES full={p_res}")
 
     primary_path = p_res.get("primary_path") if isinstance(p_res.get("primary_path"), str) else None
     srt_path = pick_srt_path_from_pipeline_result(p_res)
@@ -373,6 +384,8 @@ def run_pr4c_closed_loop(
             b_payload["video_path"] = video_path
             b_payload["srt_path"] = final_srt
             b_res = safe_invoke_flat(b_tool, BURN_SUBTITLES, b_payload)
+            logger.debug(f"BURN_RES full={b_res}")
+
             ov = b_res.get("out_video_path")
             if isinstance(ov, str) and ov:
                 out_video_path = ov

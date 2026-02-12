@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 
-from subgen.utils.logger import configure_logging, get_logger
+from subgen.utils.logger import configure_logging, get_logger, set_trace_id
 
 # --- Optional deps (extras: agent / rag) ---
 try:
@@ -65,9 +65,6 @@ Default behavior (unless user overrides explicitly in args):
 """
 
 
-# -------------------------
-# Helpers: tool call normalization
-# -------------------------
 def _safe_json_loads(s: str) -> Dict[str, Any]:
     try:
         obj = json.loads(s)
@@ -113,9 +110,6 @@ def _extract_tool_calls(ai_msg: Any) -> List[Dict[str, Any]]:
     return []
 
 
-# -------------------------
-# Tool invocation: always return flat dict to feed back to LLM
-# -------------------------
 def _is_envelope(x: Any) -> bool:
     return isinstance(x, dict) and set(x.keys()) >= {"ok", "data", "error"}
 
@@ -146,18 +140,25 @@ def _flatten_envelope_for_llm(tool_name: str, env: dict[str, Any]) -> dict[str, 
 
 
 def _safe_tool_invoke_flat(tool: StructuredTool, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+    logger = get_logger("subgen")
     try:
+        logger.debug(f"TOOL_CALL -> {tool_name} args={tool_args}")
         result = tool.invoke(tool_args)
 
         if _is_envelope(result):
-            return _flatten_envelope_for_llm(tool_name, result)
+            flat = _flatten_envelope_for_llm(tool_name, result)
+            logger.debug(f"TOOL_RET  <- {tool_name} keys={list(flat.keys())} ok={bool(flat.get('ok', True))}")
+            return flat
 
         if isinstance(result, dict):
+            logger.debug(f"TOOL_RET  <- {tool_name} keys={list(result.keys())} ok={bool(result.get('ok', True))}")
             return result
 
+        logger.debug(f"TOOL_RET  <- {tool_name} (non-dict) type={type(result)}")
         return {"ok": True, "result": result}
 
     except ValidationError as e:
+        logger.debug(f"TOOL_ERR  !! {tool_name} validation_error errors={e.errors()} args={tool_args}")
         return {
             "ok": False,
             "meta": {
@@ -169,6 +170,7 @@ def _safe_tool_invoke_flat(tool: StructuredTool, tool_name: str, tool_args: Dict
             },
         }
     except Exception as e:
+        logger.exception(f"TOOL_ERR  !! {tool_name} invoke_error args={tool_args}")
         return {
             "ok": False,
             "meta": {
@@ -185,9 +187,6 @@ def _safe_tool_invoke_flat(tool: StructuredTool, tool_name: str, tool_args: Dict
         }
 
 
-# -------------------------
-# PR#4c defaults
-# -------------------------
 def _inject_default_zh_only_pipeline_args(tool_args: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(tool_args or {})
     out.setdefault("target_lang", "zh")
@@ -216,9 +215,6 @@ def _pick_srt_path_from_pipeline_result(pipeline_res: Dict[str, Any]) -> Optiona
     return None
 
 
-# -------------------------
-# Runtime-enforced loop helpers
-# -------------------------
 def _quality_check(
     tool_map: Dict[str, StructuredTool],
     srt_path: str,
@@ -257,10 +253,6 @@ def _burn(
 
 
 def _extract_quality_counts(q_res: Dict[str, Any]) -> tuple[Optional[int], Optional[int], Optional[int]]:
-    """
-    Best-effort summary extraction:
-    returns (major_count, minor_count, total_violations)
-    """
     summary = q_res.get("summary")
     if not isinstance(summary, dict):
         return None, None, None
@@ -268,7 +260,6 @@ def _extract_quality_counts(q_res: Dict[str, Any]) -> tuple[Optional[int], Optio
     major = summary.get("major_count")
     minor = summary.get("minor_count")
 
-    # fallbacks
     if major is None:
         major = summary.get("majors") or summary.get("major")
     if minor is None:
@@ -290,10 +281,7 @@ def _extract_quality_counts(q_res: Dict[str, Any]) -> tuple[Optional[int], Optio
 
 def _extract_fix_stats(f_res: Dict[str, Any]) -> tuple[Optional[bool], int, List[str]]:
     changed = f_res.get("changed")
-    if isinstance(changed, bool):
-        ch = changed
-    else:
-        ch = None
+    ch = changed if isinstance(changed, bool) else None
 
     actions = f_res.get("actions")
     names: List[str] = []
@@ -336,8 +324,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Trace id for this run (bind to logger via filter).
+    trace_id = uuid.uuid4().hex
+    set_trace_id(trace_id)
+
     # Console logging first (stderr). File logging may be added later once out_dir is known.
     logger = configure_logging(log_path=(args.log_path or None))
+    logger.debug(f"BOOT trace_id={trace_id} argv={sys.argv}")
 
     model_name = os.getenv("SUBGEN_AGENT_MODEL", "gpt-5.2")
     llm = ChatOpenAI(model=model_name, temperature=0)
@@ -360,15 +353,19 @@ def main() -> None:
     did_generate = False
     loop_completed = False
 
-    # helper: audit/acceptance prints -> stderr via logger
+    # console acceptance summary
     def _note(msg: str) -> None:
         logger.info(msg)
 
-    _note(f"START: model={model_name} max_steps={args.max_steps} max_passes={args.max_passes}")
+    _note(f"START: trace={trace_id} model={model_name} max_steps={args.max_steps} max_passes={args.max_passes}")
 
     for step in range(args.max_steps):
         ai_msg = llm_with_tools.invoke(messages)
         tool_calls = _extract_tool_calls(ai_msg)
+
+        logger.debug(f"LLM_STEP {step}: tool_calls={len(tool_calls)}")
+        if tool_calls:
+            logger.debug(f"LLM_STEP {step}: calls={tool_calls}")
 
         if not tool_calls:
             if loop_completed:
@@ -401,30 +398,29 @@ def main() -> None:
             if not isinstance(raw_args, dict):
                 raw_args = {"_args": raw_args}
 
+            logger.debug(f"DISPATCH step={step} tool={name} call_id={call_id} raw_args={raw_args}")
+
             if name == BURN_SUBTITLES and not loop_completed:
                 pending_burn_args = dict(raw_args)
                 _note("BURN deferred until after quality loop completes.")
-                flat = {
-                    "ok": True,
-                    "deferred": True,
-                    "meta": {
-                        "note": "burn_subtitles deferred until after quality loop (pass or best-effort).",
-                    },
-                }
+                flat = {"ok": True, "deferred": True, "meta": {"note": "burn_subtitles deferred until after quality loop."}}
                 messages.append(ToolMessage(tool_call_id=call_id, content=json.dumps(flat, ensure_ascii=False)))
                 continue
 
             if name == RUN_SUBGEN_PIPELINE:
                 pipeline_args = _inject_default_zh_only_pipeline_args(raw_args)
 
-                # If out_dir is known now, attach debug.log there (preferred).
                 out_dir = pipeline_args.get("out_dir")
                 if isinstance(out_dir, str) and out_dir:
-                    configure_logging(log_path=os.path.join(out_dir, "debug.log"))
-                    _note(f"LOG: debug file -> {os.path.join(out_dir, 'debug.log')}")
+                    debug_path = os.path.join(out_dir, "debug.log")
+                    configure_logging(log_path=debug_path)
+                    _note(f"LOG: debug file -> {debug_path}")
+                    logger.debug(f"LOG_CONFIG file_handler={debug_path}")
 
                 _note(f"STEP {step}: run_subgen_pipeline")
                 flat_pipeline = _safe_tool_invoke_flat(tool_map[RUN_SUBGEN_PIPELINE], RUN_SUBGEN_PIPELINE, pipeline_args)
+
+                logger.debug(f"PIPELINE_RES ok={bool(flat_pipeline.get('ok', True))} keys={list(flat_pipeline.keys())}")
                 messages.append(ToolMessage(tool_call_id=call_id, content=json.dumps(flat_pipeline, ensure_ascii=False)))
 
                 did_generate = True
@@ -433,6 +429,7 @@ def main() -> None:
                     primary_path = flat_pipeline.get("primary_path")
 
                 current_srt_path = _pick_srt_path_from_pipeline_result(flat_pipeline) or current_srt_path
+                logger.debug(f"PIPELINE_PATHS primary_path={primary_path} current_srt_path={current_srt_path}")
 
                 if not flat_pipeline.get("ok") or not current_srt_path:
                     _note("PIPELINE failed or did not return an SRT path (best-effort stop).")
@@ -445,10 +442,11 @@ def main() -> None:
                     )
                     return
 
-                # Enforce: check -> fix loop (N)
                 passes_used = 0
 
                 q_res = _quality_check(tool_map, current_srt_path)
+                logger.debug(f"QUALITY_RES pass=0 full={q_res}")
+
                 if isinstance(q_res.get("report_path"), str):
                     report_path = q_res.get("report_path")
 
@@ -467,6 +465,8 @@ def main() -> None:
 
                     _note(f"RETRY {passes_used}/{args.max_passes}: reason=quality_fail -> fix_subtitles")
                     f_res = _fix_subtitles(tool_map, current_srt_path, extra_args={"max_passes": 1})
+                    logger.debug(f"FIX_RES pass={passes_used} full={f_res}")
+
                     messages.append(
                         ToolMessage(tool_call_id=f"runtime_{uuid.uuid4().hex}", content=json.dumps(f_res, ensure_ascii=False))
                     )
@@ -486,6 +486,8 @@ def main() -> None:
                         )
 
                     q_res = _quality_check(tool_map, current_srt_path)
+                    logger.debug(f"QUALITY_RES pass={passes_used} full={q_res}")
+
                     if isinstance(q_res.get("report_path"), str):
                         report_path = q_res.get("report_path")
 
@@ -504,7 +506,6 @@ def main() -> None:
 
                 loop_completed = True
 
-                # Deferred burn: execute after loop (even if quality failed, still best-effort)
                 if pending_burn_args:
                     video_path = None
                     if isinstance(pending_burn_args.get("video_path"), str):
@@ -518,15 +519,18 @@ def main() -> None:
                         burn_extra.pop("video_path", None)
                         burn_extra.pop("srt_path", None)
                         b_res = _burn(tool_map, video_path, current_srt_path, extra_args=burn_extra)
+                        logger.debug(f"BURN_RES full={b_res}")
+
                         if isinstance(b_res.get("out_video_path"), str):
                             out_video_path = b_res.get("out_video_path")
+
                         messages.append(
                             ToolMessage(tool_call_id=f"runtime_{uuid.uuid4().hex}", content=json.dumps(b_res, ensure_ascii=False))
                         )
-
                         _note(f"BURN done: ok={bool(b_res.get('ok'))} out_video={out_video_path}")
                     else:
                         _note("BURN skipped: missing video_path or current_srt_path")
+
                     pending_burn_args = None
 
                 _note(
@@ -543,23 +547,17 @@ def main() -> None:
                 )
                 return
 
-            # other tools: normal invoke (no verbose dump; tool output is fed back to LLM)
             if name not in tool_map:
                 _note(f"ERROR: unknown tool called: {name}")
                 flat = {
                     "ok": False,
-                    "meta": {
-                        "error": {
-                            "type": "runtime.unknown_tool",
-                            "message": f"Unknown tool called: {name}",
-                            "details": {"expected": TOOL_NAMES},
-                        }
-                    },
+                    "meta": {"error": {"type": "runtime.unknown_tool", "message": f"Unknown tool called: {name}", "details": {"expected": TOOL_NAMES}}},
                 }
                 messages.append(ToolMessage(tool_call_id=call_id, content=json.dumps(flat, ensure_ascii=False)))
                 continue
 
             flat = _safe_tool_invoke_flat(tool_map[name], name, raw_args)
+            logger.debug(f"TOOL_GENERIC_RES tool={name} ok={bool(flat.get('ok', True))} keys={list(flat.keys())}")
             messages.append(ToolMessage(tool_call_id=call_id, content=json.dumps(flat, ensure_ascii=False)))
 
         if not did_generate:
