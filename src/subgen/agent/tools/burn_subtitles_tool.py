@@ -14,7 +14,7 @@ from subgen.core.video.burn import burn_subtitles
 
 def _resolve_path(p: Path) -> Path:
     """
-    Resolve relative paths robustly for CLI usage:
+    Resolve relative paths robustly for agent tool usage:
     1) treat as relative to cwd
     2) if not exists, try ./out/<name>
     """

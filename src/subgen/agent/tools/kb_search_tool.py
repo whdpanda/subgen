@@ -145,7 +145,7 @@ def make_kb_search_tool() -> StructuredTool:
         name=KB_SEARCH,  # ✅ 关键：不再手写字符串
         description=(
             "Search SubGen internal knowledge base (docs/knowledge) for "
-            "schemas, defaults, CLI/agent usage, and implementation notes. "
+            "schemas, defaults, agent usage, and implementation notes. "
             "Use this BEFORE calling other tools if uncertain."
         ),
         func=_kb_search,
