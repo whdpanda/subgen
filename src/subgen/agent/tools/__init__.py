@@ -1,6 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any
 
 from subgen.agent.tools.tool_names import TOOL_NAMES, assert_tool_name
 
@@ -15,19 +15,21 @@ def _guard_tool_obj(tool: Any) -> None:
     assert_tool_name(name)
 
 
-def build_agent_tools() -> List["StructuredTool"]:
-    """
-    Build and return all agent tools (lazy import).
-    Returned order MUST follow TOOL_NAMES.
-    """
+def build_agent_tools() -> list["StructuredTool"]:
+    """Build and return all agent tools in the canonical TOOL_NAMES order."""
     from langchain_core.tools import StructuredTool
 
-    # NOTE: 如果你实际文件名不同，只改下面 5 行 import
+    from subgen.agent.tools.burn_subtitles_tool import BurnToolArgs, burn_subtitles_tool
+    from subgen.agent.tools.fix_subtitles_tool import FixToolArgs, fix_subtitles_tool
     from subgen.agent.tools.kb_search_tool import make_kb_search_tool
-    from subgen.agent.tools.run_subgen_pipeline_tool import run_subgen_pipeline_tool, PipelineToolArgs
-    from subgen.agent.tools.quality_check_subtitles_tool import quality_check_subtitles_tool, QualityToolArgs
-    from subgen.agent.tools.fix_subtitles_tool import fix_subtitles_tool, FixToolArgs
-    from subgen.agent.tools.burn_subtitles_tool import burn_subtitles_tool, BurnToolArgs
+    from subgen.agent.tools.quality_check_subtitles_tool import (
+        QualityToolArgs,
+        quality_check_subtitles_tool,
+    )
+    from subgen.agent.tools.run_subgen_pipeline_tool import (
+        PipelineToolArgs,
+        run_subgen_pipeline_tool,
+    )
 
     kb_tool = make_kb_search_tool()
     _guard_tool_obj(kb_tool)
@@ -65,14 +67,12 @@ def build_agent_tools() -> List["StructuredTool"]:
     _guard_tool_obj(burn_tool)
 
     tools = [kb_tool, pipeline_tool, quality_tool, fix_tool, burn_tool]
-    name_to_tool: Dict[str, StructuredTool] = {t.name: t for t in tools}
+    name_to_tool: dict[str, StructuredTool] = {t.name: t for t in tools}
 
-    # no duplicates
     if len(name_to_tool) != len(tools):
         names = [t.name for t in tools]
         raise RuntimeError(f"Duplicate tool names detected: {names}")
 
-    # exact set
     got = set(name_to_tool.keys())
     expected = set(TOOL_NAMES)
     missing = sorted(expected - got)

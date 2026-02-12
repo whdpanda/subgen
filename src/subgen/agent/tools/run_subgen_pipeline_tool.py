@@ -8,19 +8,9 @@ from typing import Any, Optional, Union
 from pydantic import ValidationError
 
 from subgen.agent.tools.schemas import PipelineToolArgs, parse_tool_args
+from subgen.agent.tools.tool_utils import path_values_to_str
 from subgen.core.contracts import PipelineConfig
 from subgen.core.pipeline import run_pipeline
-
-
-def _safe_str_value(v: Any) -> Any:
-    return str(v) if isinstance(v, Path) else v
-
-
-def _safe_str_dict(d: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for k, v in d.items():
-        out[k] = _safe_str_value(v)
-    return out
 
 
 def _ok_flat(
@@ -35,9 +25,9 @@ def _ok_flat(
         "ok": True,
         "primary_path": str(primary_path) if primary_path is not None else None,
         "srt_paths": [str(p) for p in (srt_paths or [])],
-        "outputs": _safe_str_dict(outputs or {}),
-        "artifacts": _safe_str_dict(artifacts or {}),
-        "meta": _safe_str_dict(meta or {}),
+        "outputs": path_values_to_str(outputs or {}),
+        "artifacts": path_values_to_str(artifacts or {}),
+        "meta": path_values_to_str(meta or {}),
     }
 
 
@@ -57,15 +47,15 @@ def _fail_flat(
     m["error"] = {
         "type": err_type,
         "message": message,
-        "details": _safe_str_dict(details or {}),
+        "details": path_values_to_str(details or {}),
     }
     return {
         "ok": False,
         "primary_path": str(primary_path) if primary_path is not None else None,
         "srt_paths": [str(p) for p in (srt_paths or [])],
-        "outputs": _safe_str_dict(outputs or {}),
-        "artifacts": _safe_str_dict(artifacts or {}),
-        "meta": _safe_str_dict(m),
+        "outputs": path_values_to_str(outputs or {}),
+        "artifacts": path_values_to_str(artifacts or {}),
+        "meta": path_values_to_str(m),
     }
 
 
@@ -108,7 +98,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
         return _fail_flat(
             err_type="pipeline.validation_error",
             message="invalid tool arguments",
-            details={"errors": e.errors(), "input": _safe_str_dict(kwargs)},
+            details={"errors": e.errors(), "input": path_values_to_str(kwargs)},
         )
     except Exception as e:
         return _fail_flat(
@@ -117,7 +107,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
             details={
                 "exception_class": e.__class__.__name__,
                 "traceback": traceback.format_exc(),
-                "input": _safe_str_dict(kwargs),
+                "input": path_values_to_str(kwargs),
             },
         )
 

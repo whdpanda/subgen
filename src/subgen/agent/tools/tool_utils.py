@@ -68,3 +68,13 @@ def fail_flat(
         "details": details or {},
     }
     return {"ok": False, **base, "meta": m}
+
+
+def path_to_str(value: Any) -> Any:
+    """Convert Path to str while keeping non-Path values unchanged."""
+    return str(value) if isinstance(value, Path) else value
+
+
+def path_values_to_str(payload: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-convert Path values in a dict into strings for JSON-safe tool output."""
+    return {k: path_to_str(v) for k, v in payload.items()}

@@ -8,17 +8,8 @@ from typing import Any, Optional, Union
 from pydantic import ValidationError
 
 from subgen.agent.tools.schemas import BurnToolArgs, parse_tool_args
+from subgen.agent.tools.tool_utils import path_values_to_str
 from subgen.core.video.burn import burn_subtitles
-
-
-# -------------------------
-# JSON-safe helpers
-# -------------------------
-def _safe_str_dict(d: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for k, v in d.items():
-        out[k] = str(v) if isinstance(v, Path) else v
-    return out
 
 
 def _resolve_path(p: Path) -> Path:
@@ -48,8 +39,8 @@ def _ok_flat(*, out_video_path: Union[str, Path], artifacts: Optional[dict[str, 
     return {
         "ok": True,
         "out_video_path": str(out_video_path),
-        "artifacts": _safe_str_dict(artifacts or {}),
-        "meta": _safe_str_dict(meta or {}),
+        "artifacts": path_values_to_str(artifacts or {}),
+        "meta": path_values_to_str(meta or {}),
     }
 
 
@@ -67,13 +58,13 @@ def _fail_flat(
     m["error"] = {
         "type": err_type,
         "message": message,
-        "details": _safe_str_dict(details or {}),
+        "details": path_values_to_str(details or {}),
     }
     return {
         "ok": False,
         "out_video_path": str(out_video_path) if out_video_path is not None else None,
-        "artifacts": _safe_str_dict(artifacts or {}),
-        "meta": _safe_str_dict(m),
+        "artifacts": path_values_to_str(artifacts or {}),
+        "meta": path_values_to_str(m),
     }
 
 
@@ -95,7 +86,7 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
         return _fail_flat(
             err_type="burn.validation_error",
             message="invalid tool arguments",
-            details={"errors": e.errors(), "input": _safe_str_dict(kwargs)},
+            details={"errors": e.errors(), "input": path_values_to_str(kwargs)},
         )
     except Exception as e:
         return _fail_flat(
@@ -104,7 +95,7 @@ def burn_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
             details={
                 "exception_class": e.__class__.__name__,
                 "traceback": traceback.format_exc(),
-                "input": _safe_str_dict(kwargs),
+                "input": path_values_to_str(kwargs),
             },
         )
 
