@@ -187,6 +187,28 @@ def _safe_tool_invoke_flat(tool: StructuredTool, tool_name: str, tool_args: Dict
         }
 
 
+def _tool_error_brief(flat_result: Dict[str, Any]) -> Optional[str]:
+    """Extract short `type: message` text from flat tool error payload."""
+    meta = flat_result.get("meta")
+    if not isinstance(meta, dict):
+        return None
+
+    err = meta.get("error")
+    if not isinstance(err, dict):
+        return None
+
+    err_type = err.get("type")
+    message = err.get("message")
+
+    if isinstance(err_type, str) and isinstance(message, str):
+        return f"{err_type}: {message}"
+    if isinstance(message, str):
+        return message
+    if isinstance(err_type, str):
+        return err_type
+    return None
+
+
 def _inject_default_zh_only_pipeline_args(tool_args: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(tool_args or {})
     out.setdefault("target_lang", "zh")
@@ -432,7 +454,11 @@ def main() -> None:
                 logger.debug(f"PIPELINE_PATHS primary_path={primary_path} current_srt_path={current_srt_path}")
 
                 if not flat_pipeline.get("ok") or not current_srt_path:
-                    _note("PIPELINE failed or did not return an SRT path (best-effort stop).")
+                    err_brief = _tool_error_brief(flat_pipeline)
+                    if err_brief:
+                        _note(f"PIPELINE failed or did not return an SRT path (best-effort stop). reason={err_brief}")
+                    else:
+                        _note("PIPELINE failed or did not return an SRT path (best-effort stop).")
                     _final_stdout_only_paths(
                         ok=False,
                         primary_path=primary_path,
