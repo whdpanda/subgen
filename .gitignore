@@ -29,3 +29,6 @@ htmlcov/
 *.log
 .DS_Store
 Thumbs.db
+
+# ---- 本地运行结果快照 ----
+result.json
