@@ -9,7 +9,7 @@ from subgen.core.contracts import PipelineConfig, PipelineResult
 from subgen.core.audio.extract import extract_audio
 from subgen.core.asr.local_whisper import LocalWhisperASR
 from subgen.core.align.noop import NoopAlign
-from subgen.core.postprocess.punct_split import split_segments_on_sentence_end_punct
+from subgen.core.postprocess.pipeline import apply_postprocess_pipeline
 from subgen.core.postprocess.zh_layout import apply_zh_layout_split_to_cues  # UPDATED: split-to-cues
 from subgen.core.translate.engine_nllb import NLLBTranslator
 from subgen.core.translate.engine_openai import OpenAITranslator
@@ -21,7 +21,6 @@ from subgen.utils.logger import get_logger
 from subgen.core.segment.rule import RuleSegmenter
 from subgen.core.segment.openai_segmenter import OpenAISegmenter
 from subgen.core.quality.fixers import repair_segments_with_tail_listen
-from subgen.core.postprocess.coalesce import coalesce_segments
 
 from subgen.core_types import Transcript
 
@@ -187,19 +186,13 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
         suspect_cps=cfg.suspect_cps,
     )
 
-    segments = split_segments_on_sentence_end_punct(
+    segments = apply_postprocess_pipeline(
         words=list(transcript.words or []),
         segments=segments,
         min_seg=2.5,
-        hard_max=20.0,
-    )
-
-    segments = coalesce_segments(
-        segments,
-        min_dur=2.5,
-        min_chars=8,
-        target_dur=cfg.soft_max,
+        soft_max=cfg.soft_max,
         hard_max=cfg.hard_max,
+        min_chars=8,
     )
 
     transcript_src = Transcript(language=src_lang, segments=segments)
