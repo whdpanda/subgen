@@ -29,17 +29,20 @@ def parse_tool_args(model_cls: Type[T], args_or_kwargs: Union[T, dict[str, Any]]
 # -------------------------
 # Quality Check Tool
 # -------------------------
-class QualityToolArgs(BaseModel):
-    srt_path: Path = Field(..., description="Input SRT path")
-    profile: str = Field("default", description="Quality profile name")
+class QualityProfileOverrides(BaseModel):
+    """Shared quality profile override knobs used by quality/fix tools."""
 
-    # Optional overrides (PR#4a minimal profile knobs)
     max_cps: float = Field(16.0, description="Max chars-per-second")
     max_line_len: int = Field(18, description="Max line length")
     max_lines: int = Field(1, description="Max number of lines")
     min_dur_ms: int = Field(900, description="Min cue duration ms")
     max_dur_ms: int = Field(6500, description="Max cue duration ms")
     max_overlap_ms: int = Field(0, description="Max allowed overlap ms")
+
+
+class QualityToolArgs(QualityProfileOverrides):
+    srt_path: Path = Field(..., description="Input SRT path")
+    profile: str = Field("default", description="Quality profile name")
 
     out_dir: Optional[Path] = Field(
         None,
@@ -50,16 +53,10 @@ class QualityToolArgs(BaseModel):
 # -------------------------
 # Fix Subtitles Tool
 # -------------------------
-class FixToolArgs(BaseModel):
+class FixToolArgs(QualityProfileOverrides):
     srt_path: Path = Field(..., description="Input SRT path")
 
     profile: str = Field("default", description="Quality profile name")
-    max_cps: float = Field(16.0, description="Max chars-per-second")
-    max_line_len: int = Field(18, description="Max line length")
-    max_lines: int = Field(1, description="Max number of lines")
-    min_dur_ms: int = Field(900, description="Min cue duration ms")
-    max_dur_ms: int = Field(6500, description="Max cue duration ms")
-    max_overlap_ms: int = Field(0, description="Max allowed overlap ms")
 
     max_passes: int = Field(2, description="Max fix passes (core deterministic)")
     out_path: Optional[Path] = Field(
