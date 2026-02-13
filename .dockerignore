@@ -1,0 +1,32 @@
+# .dockerignore
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# venv / local outputs
+.venv/
+out/
+.subgen_kb/
+
+# build artifacts
+build/
+dist/
+*.egg-info/
+*.whl
+
+# tooling
+.vscode/
+.idea/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# logs
+*.log

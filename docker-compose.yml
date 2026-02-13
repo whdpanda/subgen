@@ -1,0 +1,17 @@
+# docker-compose.yml
+services:
+  subgen-api:
+    build: .
+    container_name: subgen-api
+    ports:
+      - "8000:8000"
+    environment:
+      SUBGEN_DATA_ROOT: /data
+      SUBGEN_ALLOWED_ROOTS: /data
+      SUBGEN_ALLOW_CREATE_OUTPUT_DIR: "1"
+      SUBGEN_QUALITY_MAX_PASSES: "3"
+      # 可选：进程级日志文件（一般不需要，Step4 是 request-scoped debug.log）
+      # SUBGEN_LOG_PATH: /data/server.log
+    volumes:
+      - ./out:/data
+    restart: unless-stopped

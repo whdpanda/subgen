@@ -5,14 +5,21 @@ import logging
 import os
 import sys
 from contextvars import ContextVar
-from typing import Optional
+from typing import List, Optional
 
-# Per-run trace id for correlating logs across modules/tools.
+# Per-request trace id (request_id) for correlating logs across modules/tools.
 _TRACE_ID: ContextVar[str] = ContextVar("subgen_trace_id", default="-")
 
 
 def set_trace_id(trace_id: str) -> None:
     _TRACE_ID.set(trace_id or "-")
+
+
+def clear_trace_id() -> None:
+    """
+    IMPORTANT for FastAPI: clear request-scoped trace id to avoid leaking to next request.
+    """
+    _TRACE_ID.set("-")
 
 
 def get_trace_id() -> str:
@@ -26,6 +33,11 @@ class TraceIdFilter(logging.Filter):
         return True
 
 
+# Request-scoped file handlers stack (for API request-level debug.log)
+# Each request can push its own handler; we pop/close on request end.
+_FILE_HANDLER_STACK: ContextVar[List[logging.Handler]] = ContextVar("subgen_file_handler_stack", default=[])
+
+
 def _is_console_handler(h: logging.Handler) -> bool:
     # FileHandler is a StreamHandler subclass — must exclude it explicitly.
     if isinstance(h, logging.FileHandler):
@@ -37,6 +49,14 @@ def _is_console_handler(h: logging.Handler) -> bool:
 
 def _is_same_filehandler(h: logging.Handler, log_path_abs: str) -> bool:
     return isinstance(h, logging.FileHandler) and os.path.abspath(getattr(h, "baseFilename", "")) == log_path_abs
+
+
+def _detailed_file_formatter() -> logging.Formatter:
+    return logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s "
+        "trace=%(trace_id)s %(module)s:%(funcName)s:%(lineno)d | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def get_logger(name: str = "subgen") -> logging.Logger:
@@ -69,7 +89,7 @@ def configure_logging(
     """
     Configure:
     - console handler -> stderr (INFO by default), concise formatter
-    - optional file handler -> log_path (DEBUG by default), detailed formatter
+    - optional process-level file handler -> log_path (DEBUG by default), detailed formatter
 
     Idempotent:
     - no duplicate console handler
@@ -79,7 +99,6 @@ def configure_logging(
     logger.setLevel(min(console_level, file_level))
     logger.propagate = False
 
-    # Common filter for correlation
     trace_filter = TraceIdFilter()
 
     # --- Console (stderr) handler ---
@@ -93,17 +112,15 @@ def configure_logging(
         ch = logging.StreamHandler(stream=sys.stderr)
         ch.setLevel(console_level)
         ch.addFilter(trace_filter)
-        # Console: concise acceptance summary
         ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
         logger.addHandler(ch)
     else:
         console_handler.setLevel(console_level)
         if not any(isinstance(f, TraceIdFilter) for f in getattr(console_handler, "filters", [])):
             console_handler.addFilter(trace_filter)
-        # Keep console format concise; do not “upgrade” to detailed format
         console_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
 
-    # --- File handler (debug.log) ---
+    # --- Process-level file handler (optional) ---
     if log_path:
         log_path_abs = os.path.abspath(log_path)
         os.makedirs(os.path.dirname(log_path_abs), exist_ok=True)
@@ -118,26 +135,64 @@ def configure_logging(
             fh = logging.FileHandler(log_path_abs, encoding="utf-8")
             fh.setLevel(file_level)
             fh.addFilter(trace_filter)
-            # File: detailed debug format
-            fh.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s [%(levelname)s] %(name)s "
-                    "trace=%(trace_id)s %(module)s:%(funcName)s:%(lineno)d | %(message)s",
-                    datefmt="%Y-%m-%d %H:%M:%S",
-                )
-            )
+            fh.setFormatter(_detailed_file_formatter())
             logger.addHandler(fh)
         else:
             file_handler.setLevel(file_level)
             if not any(isinstance(f, TraceIdFilter) for f in getattr(file_handler, "filters", [])):
                 file_handler.addFilter(trace_filter)
             if file_handler.formatter is None:
-                file_handler.setFormatter(
-                    logging.Formatter(
-                        "%(asctime)s [%(levelname)s] %(name)s "
-                        "trace=%(trace_id)s %(module)s:%(funcName)s:%(lineno)d | %(message)s",
-                        datefmt="%Y-%m-%d %H:%M:%S",
-                    )
-                )
+                file_handler.setFormatter(_detailed_file_formatter())
 
     return logger
+
+
+def push_file_log(*, log_path: str, logger_name: str = "subgen", file_level: int = logging.DEBUG) -> None:
+    """
+    Request-scoped file logging:
+    - Add a FileHandler to logger_name
+    - Push it into a ContextVar stack so we can pop/close safely
+
+    This prevents handler accumulation across requests.
+    """
+    if not log_path:
+        return
+
+    logger = logging.getLogger(logger_name)
+    logger.propagate = False
+
+    log_path_abs = os.path.abspath(log_path)
+    os.makedirs(os.path.dirname(log_path_abs), exist_ok=True)
+
+    fh = logging.FileHandler(log_path_abs, encoding="utf-8")
+    fh.setLevel(file_level)
+    fh.addFilter(TraceIdFilter())
+    fh.setFormatter(_detailed_file_formatter())
+
+    logger.addHandler(fh)
+
+    stack = list(_FILE_HANDLER_STACK.get())
+    stack.append(fh)
+    _FILE_HANDLER_STACK.set(stack)
+
+
+def pop_file_log(*, logger_name: str = "subgen") -> None:
+    """
+    Pop the last pushed request-scoped FileHandler and close it.
+    """
+    stack = list(_FILE_HANDLER_STACK.get())
+    if not stack:
+        return
+
+    h = stack.pop()
+    _FILE_HANDLER_STACK.set(stack)
+
+    logger = logging.getLogger(logger_name)
+    try:
+        logger.removeHandler(h)
+    finally:
+        try:
+            h.close()
+        except Exception:
+            # Never throw from logging cleanup in web server context
+            pass
