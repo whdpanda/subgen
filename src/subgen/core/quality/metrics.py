@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
-from subgen.core.subtitle.models import SubtitleCue, SubtitleDoc
+from subgen.core.subtitle.models import SubtitleDoc
 
 
 def _count_reading_chars(text: str) -> int:

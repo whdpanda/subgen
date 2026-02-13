@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 
 def _fixtures_dir() -> Path:
@@ -13,7 +12,7 @@ def _fixtures_dir() -> Path:
 
 
 def test_quality_check_subtitles_tool_returns_report_path_and_file(tmp_path: Path) -> None:
-    from subgen.agent.tools.quality_check_subtitles_tool import quality_check_subtitles_tool  # noqa: WPS433
+    from subgen.agent.tools.quality_check_subtitles_tool import quality_check_subtitles_tool
 
     srt = _fixtures_dir() / "bad.srt"
     assert srt.exists(), f"fixture missing: {srt}"
@@ -42,7 +41,7 @@ def test_quality_check_subtitles_tool_best_effort_report_on_missing_srt(tmp_path
     - even if srt_path is invalid / missing, tool MUST return best-effort report_path.
     - report_path MUST exist (tool writes a failure report json).
     """
-    from subgen.agent.tools.quality_check_subtitles_tool import quality_check_subtitles_tool  # noqa: WPS433
+    from subgen.agent.tools.quality_check_subtitles_tool import quality_check_subtitles_tool
 
     missing = tmp_path / "missing.srt"
     assert not missing.exists()
