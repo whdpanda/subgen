@@ -3,9 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-import pytest
 
 from subgen.agent.loop import run_pr4c_closed_loop
 from subgen.agent.tools.tool_names import (

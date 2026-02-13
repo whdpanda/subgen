@@ -96,4 +96,4 @@ def build_agent_tools() -> List["StructuredTool"]:
     return [name_to_tool[name] for name in TOOL_NAMES]
 
 
-__all__ = ["build_agent_tools"]
+__all__ = ["build_agent_tools", "TOOL_NAME_SET"]

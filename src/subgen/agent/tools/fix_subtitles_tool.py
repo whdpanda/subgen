@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import traceback
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Union
 
 from pydantic import ValidationError
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple, Callable
+from typing import Iterable, List, Optional, Tuple
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -231,7 +231,6 @@ def dedupe_segments(
     # Because kept is time-sorted, we can pop old items from a separate list of indices.
     for seg in segs:
         seg_start = float(getattr(seg, "start", 0.0))
-        seg_end = float(getattr(seg, "end", 0.0))
         seg_text = _seg_text(seg)
         seg_norm = normalize_text(seg_text)
         seg_norm_len = len(seg_norm)
