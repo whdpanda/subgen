@@ -573,7 +573,7 @@ def main() -> None:
                 )
                 return
 
-            if name not in tool_map:
+            if not isinstance(name, str) or name not in tool_map:
                 _note(f"ERROR: unknown tool called: {name}")
                 flat = {
                     "ok": False,
@@ -582,7 +582,7 @@ def main() -> None:
                 messages.append(ToolMessage(tool_call_id=call_id, content=json.dumps(flat, ensure_ascii=False)))
                 continue
 
-            flat = _safe_tool_invoke_flat(tool_map[name], name, raw_args)
+            flat = _safe_tool_invoke_flat(tool_map[name], name, raw_args if isinstance(raw_args, dict) else {})
             logger.debug(f"TOOL_GENERIC_RES tool={name} ok={bool(flat.get('ok', True))} keys={list(flat.keys())}")
             messages.append(ToolMessage(tool_call_id=call_id, content=json.dumps(flat, ensure_ascii=False)))
 

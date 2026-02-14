@@ -161,7 +161,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
         if _pipelineconfig_supports("demucs_params"):
             cfg_kwargs["demucs_params"] = args.demucs_params or {}
 
-        cfg = PipelineConfig(**cfg_kwargs)  # type: ignore[arg-type]
+        cfg = PipelineConfig(**cfg_kwargs)
     except Exception as e:
         return _fail_flat(
             err_type="pipeline.config_build_error",
@@ -207,7 +207,7 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
     # 4) Build outputs payload (prefer res.outputs; fallback to artifacts)
     outputs: dict[str, str] = {}
     if hasattr(res, "outputs") and getattr(res, "outputs") is not None:
-        for k, v in res.outputs.items():  # type: ignore[attr-defined]
+        for k, v in res.outputs.items():
             outputs[k] = str(v)
 
     artifacts = res.artifacts or {}

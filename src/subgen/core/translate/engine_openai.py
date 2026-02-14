@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from subgen.core.translate.base import TranslatorProvider
 from subgen.core_types import Transcript, Segment
@@ -23,10 +23,10 @@ def _safe(s: str) -> str:
 
 
 # ---- lazy client (重要：避免 pytest collection 时就初始化) ----
-_client: Optional[object] = None
+_client: Optional[Any] = None
 
 
-def _get_openai_client(*, api_key: Optional[str] = None) -> object:
+def _get_openai_client(*, api_key: Optional[str] = None) -> Any:
     """
     Lazy init OpenAI client.
 
@@ -96,7 +96,7 @@ class OpenAITranslator(TranslatorProvider):
                 {"role": "user", "content": user},
             ],
         )
-        out = getattr(resp, "output_text", None)
+        out = str(getattr(resp, "output_text", "") or "")
         return (_safe(out) or _safe(cur))
 
     def translate(self, transcript: Transcript, target_lang: str = "zh") -> Transcript:

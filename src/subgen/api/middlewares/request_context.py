@@ -15,7 +15,7 @@ def _maybe_set_trace_id(trace_id: str) -> Callable[[], None]:
     in logger module, and API automatically starts injecting trace_id.
     """
     try:
-        from subgen.utils import logger as logger_mod  # type: ignore
+        from subgen.utils import logger as logger_mod
     except Exception:
         return lambda: None
 

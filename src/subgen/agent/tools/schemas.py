@@ -21,9 +21,11 @@ def parse_tool_args(model_cls: Type[T], args_or_kwargs: Union[T, dict[str, Any]]
 
     if hasattr(model_cls, "model_validate"):
         # pydantic v2
-        return model_cls.model_validate(args_or_kwargs)  # type: ignore[attr-defined]
+        return model_cls.model_validate(args_or_kwargs)
     # pydantic v1
-    return model_cls(**args_or_kwargs)  # type: ignore[call-arg]
+    if not isinstance(args_or_kwargs, dict):
+        raise TypeError("args_or_kwargs must be dict when using pydantic v1 constructor")
+    return model_cls(**args_or_kwargs)
 
 
 # -------------------------

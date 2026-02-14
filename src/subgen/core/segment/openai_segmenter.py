@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import json
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from subgen.core.segment.base import SegmenterProvider
 from subgen.core.segment.rule import RuleSegmenter
@@ -251,7 +251,7 @@ class OpenAISegmenter(SegmenterProvider):
         }
 
         try:
-            client = _get_openai_client(api_key=self.api_key)  # ✅ 关键：此时才创建 client
+            client: Any = _get_openai_client(api_key=self.api_key)  # ✅ 关键：此时才创建 client
 
             resp = client.responses.create(
                 model=self.model,
@@ -311,16 +311,17 @@ class OpenAISegmenter(SegmenterProvider):
                 continue
 
             cuts = self._call_llm_for_window(win_words)
+            cuts_list: List[int] = cuts or []
 
             # guardrail：切得过碎就回退 rule
             use_rule = False
-            if cuts is None:
+            if not cuts_list:
                 use_rule = True
             else:
-                if len(cuts) > max(10, int(len(win_words) * 0.25)):
+                if len(cuts_list) > max(10, int(len(win_words) * 0.25)):
                     use_rule = True
                 else:
-                    tmp = _build_segments_from_cuts(win_words, cuts)
+                    tmp = _build_segments_from_cuts(win_words, cuts_list)
                     avg_dur, short_ratio, one_word_like_ratio = _seg_stats(tmp)
                     if avg_dur < 2.0 or short_ratio > 0.35 or one_word_like_ratio > 0.25:
                         use_rule = True
@@ -328,7 +329,7 @@ class OpenAISegmenter(SegmenterProvider):
             if use_rule:
                 win_segs = self.fallback.segment(win_words)
             else:
-                win_segs = _build_segments_from_cuts(win_words, cuts)
+                win_segs = _build_segments_from_cuts(win_words, cuts_list)
                 # hard_max 兜底
                 fixed: List[Segment] = []
                 for s in win_segs:

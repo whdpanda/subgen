@@ -58,3 +58,22 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["src"]
+
+
+[tool.mypy]
+python_version = "3.10"
+pretty = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+  "openai",
+  "torch",
+  "transformers",
+  "faster_whisper",
+  "langchain_openai",
+  "langchain_core.*",
+  "langchain_chroma",
+  "langchain_huggingface",
+]
+ignore_missing_imports = true

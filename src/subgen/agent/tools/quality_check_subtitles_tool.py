@@ -23,7 +23,7 @@ def _report_filename(srt_path_resolved: Optional[Path]) -> str:
 
 
 def _write_report(out_dir: Path, payload: dict[str, Any]) -> Path:
-    report_path = (out_dir / _report_filename(payload.get("_srt_path_resolved"))).resolve()  # type: ignore[arg-type]
+    report_path = (out_dir / _report_filename(payload.get("_srt_path_resolved"))).resolve()
     payload.pop("_srt_path_resolved", None)
     report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return report_path
@@ -228,12 +228,12 @@ def quality_check_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
             "_srt_path_resolved": srt_path_resolved,
         }
         try:
-            rp = _write_report(out_dir, err_report)
+            rp2 = _write_report(out_dir, err_report)
         except Exception:
-            rp = None
+            rp2 = None
 
         return fail_flat(
-            base={"report_path": str(rp) if rp is not None else None, "report": err_report if rp is not None else None, "summary": None},
+            base={"report_path": str(rp2) if rp2 is not None else None, "report": err_report if rp2 is not None else None, "summary": None},
             err_type="quality.runtime_error",
             message=str(e) or e.__class__.__name__,
             details={"exception_class": e.__class__.__name__, "traceback": traceback.format_exc(), "srt_path": str(srt_path_resolved)},
