@@ -52,6 +52,7 @@ def generate(req: GenerateRequest) -> GenerateResponse:
         video_path=video_path,
         out_dir=out_dir,
         max_passes=req.max_passes,
+        pipeline_args=req.pipeline_args,  # NEW: pass-through
     )
     return GenerateResponse(**res)
 
@@ -110,7 +111,10 @@ def burn(req: BurnRequest) -> BurnResponse:
         parent = str(Path(out_path).parent)
         policy.ensure_dir(parent, create=True)
     else:
-        raise InvalidPathError("either out_path or out_dir is required for /burn", details={"fields": ["out_path", "out_dir"]})
+        raise InvalidPathError(
+            "either out_path or out_dir is required for /burn",
+            details={"fields": ["out_path", "out_dir"]},
+        )
 
     res = burn_subtitles(
         video_path=video_path,

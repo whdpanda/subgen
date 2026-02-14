@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional, Type, TypeVar, Union
+from typing import Any, Optional, Type, TypeVar, Union, Dict
 
 from pydantic import BaseModel, Field
 
@@ -103,9 +103,18 @@ class PipelineToolArgs(BaseModel):
     target_lang: str = Field("zh", description="Target language (default: zh)")
     glossary_path: Optional[Path] = Field(None, description="Optional glossary json path")
 
-    # Audio preprocess
+    # Audio preprocess (legacy)
     preprocess: str = Field("none", description="none/speech_filter/demucs")
     demucs_model: str = Field("htdemucs", description="Demucs model name when preprocess=demucs")
+
+    # Audio preprocess (PR6-ready)
+    demucs_device: str = Field("cpu", description="Demucs device cpu/cuda (future)")
+    demucs_stems: str = Field("vocals", description="Demucs stems (typically vocals)")
+    preprocess_cache_dir: Optional[str] = Field(None, description="Cache dir for torch/demucs (e.g. /cache)")
+    demucs_params: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Extra demucs flags (e.g. {shifts:1, overlap:0.25})",
+    )
 
     # ASR
     asr_model: str = Field("large-v3", description="ASR model name")

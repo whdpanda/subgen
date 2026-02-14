@@ -156,6 +156,7 @@ def fix_subtitles(
     if isinstance(q_flat, dict) and isinstance(q_flat.get("meta"), dict) and q_flat["meta"].get("error"):
         meta.setdefault("errors", []).append(q_flat["meta"]["error"])
 
+    # NOTE: response_model will drop extra fields if any; we keep fix/quality for debugging.
     return {
         "ok": bool(ok_fix and ok_quality),
         "srt_path": final_srt,

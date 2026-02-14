@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Literal
 
@@ -36,9 +36,16 @@ class PipelineConfig:
     target_lang: str = "zh"
     glossary_path: Optional[Path] = None
 
-    # Audio preprocess
+    # Audio preprocess (legacy knobs kept)
     preprocess: AudioPreprocess = "none"
     demucs_model: str = "htdemucs"
+
+    # Audio preprocess (PR6-ready structured knobs)
+    # - Keep these optional and safe defaults so PR5 remains stable.
+    demucs_device: str = "cpu"  # cpu/cuda (future)
+    demucs_stems: str = "vocals"  # usually vocals
+    preprocess_cache_dir: Optional[str] = None  # e.g. "/cache"
+    demucs_params: dict[str, Any] = field(default_factory=dict)  # extra demucs flags
 
     # ASR
     asr_model: str = "large-v3"

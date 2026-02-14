@@ -10,8 +10,13 @@ services:
       SUBGEN_ALLOWED_ROOTS: /data
       SUBGEN_ALLOW_CREATE_OUTPUT_DIR: "1"
       SUBGEN_QUALITY_MAX_PASSES: "3"
+
+      # NEW: shared cache location for torch/demucs (PR6-friendly)
+      SUBGEN_CACHE_DIR: /cache
+      TORCH_HOME: /cache
       # 可选：进程级日志文件（一般不需要，Step4 是 request-scoped debug.log）
       # SUBGEN_LOG_PATH: /data/server.log
     volumes:
       - ./out:/data
+      - ./out/.cache:/cache
     restart: unless-stopped

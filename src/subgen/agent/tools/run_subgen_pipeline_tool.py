@@ -61,20 +61,17 @@ def _fail_flat(
 
 def _pipelineconfig_supports(field_name: str) -> bool:
     """
-    Best-effort: only pass new args (e.g., zh_layout) when PipelineConfig defines them.
+    Best-effort: only pass new args when PipelineConfig defines them.
     Works for dataclass and pydantic models.
     """
-    # dataclass
     fields = getattr(PipelineConfig, "__dataclass_fields__", None)
     if isinstance(fields, dict) and field_name in fields:
         return True
 
-    # pydantic v2
     model_fields = getattr(PipelineConfig, "model_fields", None)
     if isinstance(model_fields, dict) and field_name in model_fields:
         return True
 
-    # pydantic v1
     __fields__ = getattr(PipelineConfig, "__fields__", None)
     if isinstance(__fields__, dict) and field_name in __fields__:
         return True
@@ -154,6 +151,16 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
         if _pipelineconfig_supports("zh_line_len_cap"):
             cfg_kwargs["zh_line_len_cap"] = args.zh_line_len_cap
 
+        # PR6-ready: demucs structured knobs (only if PipelineConfig supports them)
+        if _pipelineconfig_supports("demucs_device"):
+            cfg_kwargs["demucs_device"] = args.demucs_device
+        if _pipelineconfig_supports("demucs_stems"):
+            cfg_kwargs["demucs_stems"] = args.demucs_stems
+        if _pipelineconfig_supports("preprocess_cache_dir"):
+            cfg_kwargs["preprocess_cache_dir"] = args.preprocess_cache_dir
+        if _pipelineconfig_supports("demucs_params"):
+            cfg_kwargs["demucs_params"] = args.demucs_params or {}
+
         cfg = PipelineConfig(**cfg_kwargs)  # type: ignore[arg-type]
     except Exception as e:
         return _fail_flat(
@@ -205,8 +212,6 @@ def run_subgen_pipeline_tool(**kwargs: Any) -> dict[str, Any]:
 
     artifacts = res.artifacts or {}
 
-    # Fallback keys (only if tool really returned them in artifacts)
-    # NOTE: include PR#4c mono keys as well.
     if not outputs:
         for k in (
             "primary_path",

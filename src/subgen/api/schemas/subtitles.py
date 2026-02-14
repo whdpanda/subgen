@@ -22,6 +22,13 @@ class GenerateRequest(BaseModel):
     out_dir: Optional[str] = Field(None, description="Output directory (container path). Required for /generate.")
     max_passes: Optional[int] = Field(None, description="Override quality loop max passes (Step 3)")
 
+    # NEW: pass-through knobs for pipeline (PR6-ready)
+    # Example: {"preprocess":"demucs","demucs_model":"htdemucs","demucs_device":"cpu","demucs_stems":"vocals"}
+    pipeline_args: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional pipeline args pass-through (e.g. preprocess/demucs).",
+    )
+
 
 class GenerateResponse(BaseModel):
     ok: bool

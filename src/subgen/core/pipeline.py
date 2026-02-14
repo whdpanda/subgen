@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
@@ -10,7 +11,7 @@ from subgen.core.audio.extract import extract_audio
 from subgen.core.asr.local_whisper import LocalWhisperASR
 from subgen.core.align.noop import NoopAlign
 from subgen.core.postprocess.pipeline import apply_postprocess_pipeline
-from subgen.core.postprocess.zh_layout import apply_zh_layout_split_to_cues  # UPDATED: split-to-cues
+from subgen.core.postprocess.zh_layout import apply_zh_layout_split_to_cues
 from subgen.core.translate.engine_nllb import NLLBTranslator
 from subgen.core.translate.engine_openai import OpenAITranslator
 from subgen.core.refine.glossary import load_glossary, apply_glossary
@@ -31,7 +32,38 @@ from subgen.core.cache import (
     load_transcript_json,
 )
 
+# NEW: PR6-ready preprocess stage
+from subgen.core.preprocess import build_preprocess_spec, run_preprocess
+
 logger = get_logger()
+
+
+def _stable_json_hash(obj: Any) -> str:
+    """
+    Stable hash for dict-like params to salt cache keys.
+    """
+    try:
+        s = json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        s = str(obj)
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+
+
+def _preprocess_cache_tag(cfg: PipelineConfig) -> str:
+    """
+    Encode preprocess details into a stable tag, so ASR cache won't collide across
+    different demucs settings.
+    This is PR6-friendly because tag can be stored in job.json/meta later.
+    """
+    p = str(cfg.preprocess or "none")
+    if p != "demucs":
+        return p
+
+    params_hash = _stable_json_hash(getattr(cfg, "demucs_params", {}) or {})
+    model = getattr(cfg, "demucs_model", "htdemucs")
+    stems = getattr(cfg, "demucs_stems", "vocals")
+    device = getattr(cfg, "demucs_device", "cpu")
+    return f"demucs:{model}:{stems}:{device}:{params_hash}"
 
 
 def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
@@ -55,21 +87,16 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     artifacts["out_dir"] = str(cfg.out_dir)
 
     outputs["video"] = cfg.video_path
-    outputs["out_dir"] = cfg.out_dir  # note: Path, though "dir" is not a file
+    outputs["out_dir"] = cfg.out_dir
 
-    # IMPORTANT: honor output_basename to avoid overwriting and keep contract consistent
     basename = cfg.output_basename or cfg.video_path.stem
     artifacts["output_basename"] = basename
 
-    # Pre-compute output paths (even if not emitted), so downstream tools don't guess filenames.
     src_json_path = cfg.out_dir / f"{basename}.src.json"
     literal_json_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.literal.json"
 
-    # Legacy name kept for compatibility/tests
     literal_srt_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.literal.srt"
     bilingual_srt_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.bilingual.srt"
-
-    # PR#4c: new canonical mono SRT name (no ".literal" suffix)
     mono_srt_path = cfg.out_dir / f"{basename}.{cfg.target_lang}.srt"
 
     artifacts["src_json_path"] = str(src_json_path)
@@ -84,30 +111,68 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     outputs["bilingual_srt"] = bilingual_srt_path
     outputs["mono_srt"] = mono_srt_path
 
-    # 1) audio
-    audio = extract_audio(
+    # 1) audio extract (always produce a raw audio for preprocess stage)
+    # NOTE:
+    # - For PR6 readiness, demucs is handled by dedicated preprocess stage.
+    # - extract_audio here should remain responsible for extraction (ffmpeg),
+    #   not heavy ML processing.
+    raw_audio = extract_audio(
         cfg.video_path,
         cfg.out_dir,
-        preprocess=cfg.preprocess,
+        preprocess="none",          # force raw
         demucs_model=cfg.demucs_model,
     )
-    logger.info("Audio for ASR -> %s", audio.name)
-    artifacts["audio_path"] = str(audio)
-    outputs["audio"] = audio
+    logger.info("Raw audio extracted -> %s", raw_audio.name)
+    artifacts["audio_raw_path"] = str(raw_audio)
+    outputs["audio_raw"] = raw_audio
+
+    # 1.5) preprocess stage (demucs/noop)
+    spec = build_preprocess_spec(
+        preprocess=str(cfg.preprocess),
+        demucs_model=getattr(cfg, "demucs_model", None),
+        device=getattr(cfg, "demucs_device", None),
+        stems=getattr(cfg, "demucs_stems", None),
+        cache_dir=getattr(cfg, "preprocess_cache_dir", None),
+        params=getattr(cfg, "demucs_params", None),
+    )
+    artifacts["preprocess_spec"] = {
+        "name": spec.name,
+        "model": spec.model,
+        "stems": spec.stems,
+        "device": spec.device,
+        "cache_dir": spec.cache_dir,
+        "params": spec.params,
+    }
+
+    pre = run_preprocess(audio_in_path=str(raw_audio), out_dir=str(cfg.out_dir), spec=spec)
+    artifacts["preprocess_result"] = {
+        "ok": pre.ok,
+        "audio_path_for_asr": pre.audio_path_for_asr,
+        "artifacts": pre.artifacts,
+        "meta": pre.meta,
+    }
+
+    # ASR should use vocals (if demucs ok), else raw audio
+    audio_for_asr = Path(pre.audio_path_for_asr) if pre.ok else raw_audio
+    logger.info("Audio for ASR -> %s", audio_for_asr.name)
+    artifacts["audio_path"] = str(audio_for_asr)
+    outputs["audio"] = audio_for_asr
+    meta["preprocess_ok"] = bool(pre.ok)
+    meta["preprocess_name"] = spec.name
 
     # 2) ASR (cache)
+    preprocess_tag = _preprocess_cache_tag(cfg)
     key = make_asr_cache_key(
-        audio,
+        audio_for_asr,
         asr_model=cfg.asr_model,
         language=cfg.language,
-        preprocess=cfg.preprocess,
+        preprocess=preprocess_tag,  # SALTED TAG (prevents collisions across demucs configs)
         asr_device=cfg.asr_device,
         asr_compute_type=cfg.asr_compute_type,
         asr_beam_size=cfg.asr_beam_size,
         asr_best_of=cfg.asr_best_of,
         asr_vad_filter=cfg.asr_vad_filter,
     )
-    # Keep cache keyed by original video stem (stable identity); output_basename only affects final artifacts.
     t_path = asr_cache_path(cfg.out_dir, cfg.video_path.stem, key)
     artifacts["asr_cache_key"] = key
     artifacts["asr_cache_path"] = str(t_path)
@@ -133,13 +198,13 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
             best_of=cfg.asr_best_of,
             vad_filter=cfg.asr_vad_filter,
         )
-        transcript = asr.transcribe(audio, language=cfg.language)
+        transcript = asr.transcribe(audio_for_asr, language=cfg.language)
 
         save_transcript_json(t_path, transcript.model_dump())
         logger.info("ASR cached -> %s", t_path.name)
 
     # 3) align (noop)
-    transcript = NoopAlign().align(audio, transcript)
+    transcript = NoopAlign().align(audio_for_asr, transcript)
     if not transcript.words:
         raise RuntimeError("Word timestamps required. transcript.words is empty.")
 
@@ -175,7 +240,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     )
 
     segments = repair_segments_with_tail_listen(
-        audio_path=audio,
+        audio_path=audio_for_asr,
         segments=raw_segments,
         asr=asr_for_retry,
         language=repair_lang,
@@ -218,7 +283,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
         zh_literal = apply_glossary(zh_literal, glossary)
         artifacts["glossary_path"] = str(cfg.glossary_path)
 
-    # UPDATED: Chinese layout -> split into multiple cues and re-allocate timestamps
+    # Chinese layout -> split cues and re-allocate timestamps
     if cfg.zh_layout and str(cfg.target_lang).lower().startswith("zh"):
         zh_literal = apply_zh_layout_split_to_cues(
             zh_literal,
@@ -251,14 +316,12 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     srt_paths: list[Path] = []
     primary_path: Optional[Path] = None
 
-    # PR#4c: zh-only -> write mono_srt_path
     if cfg.emit in ("zh-only", "all"):
         mono_srt_path.write_text(to_srt(zh_literal), encoding="utf-8")
         logger.info("Generated -> %s", mono_srt_path.name)
         srt_paths.append(mono_srt_path)
         primary_path = mono_srt_path
 
-    # Legacy literal mode retained: writes ".literal.srt"
     if cfg.emit == "literal":
         literal_srt_path.write_text(to_srt(zh_literal), encoding="utf-8")
         logger.info("Generated -> %s", literal_srt_path.name)
@@ -274,7 +337,6 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     if cfg.emit == "none":
         primary_path = literal_json_path
 
-    # Safe fallback: choose something that would have been generated for the mode
     if primary_path is None:
         if cfg.emit in ("bilingual", "bilingual-only"):
             primary_path = bilingual_srt_path
@@ -286,7 +348,6 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
             primary_path = literal_json_path
 
     outputs["primary"] = primary_path
-
     artifacts["primary_path"] = str(primary_path)
     artifacts["srt_paths"] = [str(p) for p in srt_paths]
 
@@ -301,6 +362,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
             "emit": cfg.emit,
             "asr_cache_hit": asr_cache_hit,
             "job_id": cfg.job_id,
+            "preprocess_tag": preprocess_tag,
         }
     )
 
