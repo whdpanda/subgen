@@ -35,12 +35,18 @@ class DemucsPreprocessor:
             meta["found"] = False
             return None, None, meta
 
-        # Find deepest folder containing vocals.wav
+        # Find best matching folder containing vocals.wav
         vocals = None
         other = None
 
-        candidates = list(demucs_out_root.rglob("vocals.wav"))
+        # Fast path: most demucs versions output <root>/<model>/<input_stem>/vocals.wav
+        stem_candidates = list(demucs_out_root.glob(f"*/{input_stem}/vocals.wav"))
+        candidates = stem_candidates or list(demucs_out_root.rglob("vocals.wav"))
+        # Prefer newest artifact in case preprocess dir already contains older runs.
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
         meta["vocals_candidates"] = [str(p) for p in candidates[:20]]
+        meta["prefer_input_stem"] = input_stem
         if candidates:
             vocals = candidates[0]
 
