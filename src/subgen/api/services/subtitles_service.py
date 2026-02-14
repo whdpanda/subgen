@@ -5,7 +5,7 @@ import os
 from dataclasses import asdict, is_dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from subgen.agent.loop import LoopConfig, run_pr4c_closed_loop, safe_invoke_flat
 from subgen.agent.tools import build_agent_tools
@@ -23,7 +23,7 @@ logger = get_logger("subgen.api")
 
 def _as_jsonable(x: Any) -> Any:
     if is_dataclass(x):
-        return asdict(x)
+        return asdict(cast(Any, x))
     return x
 
 

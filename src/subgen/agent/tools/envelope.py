@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from typing import cast
 from typing import Any, Callable, Dict, Optional, TypeVar
 import traceback
 
@@ -15,7 +16,7 @@ def _jsonable(x: Any) -> Any:
     if isinstance(x, (str, int, float, bool, list, dict)):
         return x
     if is_dataclass(x):
-        return asdict(x)
+        return asdict(cast(Any, x))
     # pydantic v2 / v1 兼容：有 model_dump / dict 就用
     if hasattr(x, "model_dump") and callable(getattr(x, "model_dump")):
         return x.model_dump()

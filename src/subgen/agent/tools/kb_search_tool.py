@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import traceback
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict, cast
 
 from langchain_core.tools import StructuredTool
 
@@ -49,7 +49,7 @@ def _ok(payload: Dict[str, Any], *, meta: Optional[Dict[str, Any]] = None) -> KB
         "k": payload["k"],
         "kb": payload["kb"],
         "results": payload["results"],
-        "meta": meta or {},
+        "meta": cast(KBMeta, meta or {}),
     }
 
 

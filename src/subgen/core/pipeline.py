@@ -14,6 +14,7 @@ from subgen.core.postprocess.pipeline import apply_postprocess_pipeline
 from subgen.core.postprocess.zh_layout import apply_zh_layout_split_to_cues
 from subgen.core.translate.engine_nllb import NLLBTranslator
 from subgen.core.translate.engine_openai import OpenAITranslator
+from subgen.core.translate.base import TranslatorProvider
 from subgen.core.refine.glossary import load_glossary, apply_glossary
 from subgen.core.export.srt import to_srt, to_srt_bilingual
 from subgen.utils.io import ensure_dir
@@ -263,6 +264,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     transcript_src = Transcript(language=src_lang, segments=segments)
 
     # 6) translate
+    translator: TranslatorProvider
     if cfg.translator_name == "auto_non_en":
         if src_lang.lower().startswith("en"):
             translator = NLLBTranslator(model_name=cfg.translator_model, device=cfg.translator_device)

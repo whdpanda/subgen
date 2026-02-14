@@ -197,7 +197,7 @@ def fix_subtitles_tool(**kwargs: Any) -> dict[str, Any]:
                 },
             }
             after_err_path.write_text(json.dumps(after_error_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            qa_path: Union[str, Path] = after_err_path
+            qa_path: Union[str, Path, None] = after_err_path
         except Exception:
             logger.exception("FIX_TOOL: failed to write after_error report")
             qa_path = None

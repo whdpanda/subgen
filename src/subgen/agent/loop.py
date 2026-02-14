@@ -90,7 +90,8 @@ def _flatten_envelope(tool_name: str, env: Dict[str, Any]) -> Dict[str, Any]:
         out = dict(data)
         out["ok"] = ok
         if err:
-            meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+            meta_any = out.get("meta")
+            meta: Dict[str, Any] = meta_any if isinstance(meta_any, dict) else {}
             meta["error"] = err
             out["meta"] = meta
         return out

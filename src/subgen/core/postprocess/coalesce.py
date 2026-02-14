@@ -1,7 +1,7 @@
 # subgen/core/segment/coalesce.py
 from __future__ import annotations
 
-from typing import List, Optional, Any
+from typing import List, Optional, Any, cast
 
 from subgen.core_types import Segment
 
@@ -129,7 +129,7 @@ def coalesce_segments(
         # Local import to avoid circular dependency and keep coalesce focused.
         from subgen.core.postprocess.dedupe import DedupeConfig, dedupe_segments
 
-        merged = dedupe_segments(
+        merged = cast(List[Segment], dedupe_segments(
             merged,
             cfg=DedupeConfig(
                 time_window_s=float(dedupe_time_window_s),
@@ -137,6 +137,6 @@ def coalesce_segments(
                 short_text_chars=int(dedupe_short_chars),
             ),
             logger=logger,
-        )
+        ))
 
     return merged

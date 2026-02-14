@@ -289,25 +289,25 @@ def _alloc_times_by_chars(start: float, end: float, parts: List[str]) -> List[Tu
     dur = float(end) - float(start)
     if dur <= 0:
         eps = 0.001
-        out = []
+        tmp_spans = []
         cur = float(start)
         for _ in range(n):
-            out.append((cur, cur + eps))
+            tmp_spans.append((cur, cur + eps))
             cur += eps
-        return out
+        return tmp_spans
 
     weights = [_count_reading_chars(p) for p in parts]
     total = sum(weights)
 
     if total <= 0:
         step = dur / n
-        out = []
+        even_spans = []
         for i in range(n):
             s = float(start) + step * i
             e = float(start) + step * (i + 1)
-            out.append((s, e))
-        out[-1] = (out[-1][0], float(end))
-        return out
+            even_spans.append((s, e))
+        even_spans[-1] = (even_spans[-1][0], float(end))
+        return even_spans
 
     out: List[Tuple[float, float]] = []
     acc = 0.0
@@ -355,7 +355,6 @@ def apply_zh_layout(
     out_segs: List[Dict[str, Any]] = []
     for seg in segs:
         if not isinstance(seg, dict):
-            out_segs.append(seg)  # type: ignore[list-item]
             continue
 
         field, txt = _get_text_field(seg)
@@ -404,7 +403,6 @@ def apply_zh_layout_split_to_cues(
 
     for seg in segs:
         if not isinstance(seg, dict):
-            out_segs.append(seg)  # type: ignore[list-item]
             continue
 
         if "start" not in seg or "end" not in seg:
@@ -433,9 +431,9 @@ def apply_zh_layout_split_to_cues(
 
         # 2) 次优先：token 边界 + 3) 长度/行约束兜底
         cue_texts: List[str] = []
-        for s in sentences:
+        for sentence in sentences:
             parts = _split_sentence_to_cues(
-                s,
+                sentence,
                 max_chars_per_cue=max_chars_per_cue,
                 max_line_len=max_line_len,
                 max_lines=max_lines,
@@ -460,10 +458,10 @@ def apply_zh_layout_split_to_cues(
 
         spans = _alloc_times_by_chars(start, end, cue_texts)
 
-        for (s, e), cue_text in zip(spans, cue_texts):
+        for (span_start, span_end), cue_text in zip(spans, cue_texts):
             seg2 = dict(seg)
-            seg2["start"] = float(s)
-            seg2["end"] = float(e)
+            seg2["start"] = str(float(span_start)) if isinstance(seg.get("start"), str) else float(span_start)
+            seg2["end"] = str(float(span_end)) if isinstance(seg.get("end"), str) else float(span_end)
             seg2[field] = wrap_zh(
                 cue_text,
                 max_line_len=max_line_len,

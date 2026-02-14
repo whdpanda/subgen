@@ -37,7 +37,7 @@ def test_kb_search_tool_schema(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv("SUBGEN_KB_COLLECTION", collection_name)
 
     # 4) 真调用 tool（你的 make_kb_search_tool() 不接收参数）
-    from subgen.agent.tools.kb_search_tool import make_kb_search_tool  # noqa: WPS433
+    from subgen.agent.tools.kb_search_tool import make_kb_search_tool
 
     tool = make_kb_search_tool()
     out = tool.invoke({"query": "hello", "k": 1})
@@ -71,7 +71,7 @@ def test_run_subgen_pipeline_tool_schema(monkeypatch: pytest.MonkeyPatch, tmp_pa
     目的：防止未来改 run_subgen_pipeline_tool 返回字段名，导致 KB/agent 文档与实现不一致。
     不跑真实 pipeline：patch pipeline_tool 里实际调用的 pt.run_pipeline(cfg)。
     """
-    import subgen.agent.tools.run_subgen_pipeline_tool as pt  # noqa: WPS433
+    import subgen.agent.tools.run_subgen_pipeline_tool as pt
 
     # 1) fake PipelineResult（只要满足你 tool 里用到的字段）
     class _FakeRes:
