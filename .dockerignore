@@ -1,32 +1,50 @@
-# .dockerignore
+# ---- VCS ----
+.git/
+.gitignore
 
-# Python caches
+# ---- Python caches ----
 __pycache__/
 *.py[cod]
 *$py.class
 
-# venv / local outputs
+# ---- virtualenv / local outputs ----
 .venv/
 out/
 .subgen_kb/
 
-# build artifacts
+# ---- packaging/build artifacts ----
 build/
 dist/
 *.egg-info/
 *.whl
 
-# tooling
-.vscode/
-.idea/
+# ---- test / typecheck / tooling caches ----
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
 .coverage
+*.cover
 htmlcov/
 
-# OS junk
+# ---- IDE ----
+.vscode/
+.idea/
+
+# ---- OS junk ----
 .DS_Store
 Thumbs.db
 
-# logs
+# ---- logs (local only; container writes logs to mounted /data) ----
 *.log
+debug.log
+
+# ---- Jupyter / notebooks (optional) ----
+.ipynb_checkpoints/
+
+# ---- Node (if any) ----
+node_modules/
+
+# ---- Docker local artifacts (optional) ----
+**/.dockerignore

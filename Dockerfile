@@ -1,7 +1,8 @@
 # Dockerfile
 FROM python:3.11-slim
 
-# --- System deps (ffmpeg for burn/subtitles, plus basic build utils) ---
+# --- System deps ---
+# ffmpeg: burn subtitles / audio extraction
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
@@ -9,12 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # --- App setup ---
 WORKDIR /app
-
-# Copy project first (simple approach; if you want better layer caching later, split requirements)
 COPY . /app
 
-# Upgrade pip and install project
+# --- Python deps ---
+# 1) Upgrade pip
+# 2) Install PyTorch CPU wheels explicitly (prevents pulling CUDA builds)
+# 3) Install demucs
+# 4) Install this project
 RUN pip install --no-cache-dir -U pip && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+      torch torchaudio && \
+    pip install --no-cache-dir demucs && \
     pip install --no-cache-dir .
 
 # --- Runtime env defaults ---

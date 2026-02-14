@@ -1,7 +1,11 @@
+# src/subgen/api/main.py
 from __future__ import annotations
 
 import os
 
+# IMPORTANT:
+# Export the real application created in app.py (which includes api_router).
+from subgen.api.app import app  # noqa: F401
 
 
 def run() -> None:
@@ -13,6 +17,8 @@ def run() -> None:
 
     host = os.getenv("SUBGEN_API_HOST", "0.0.0.0")
     port = int(os.getenv("SUBGEN_API_PORT", "8000"))
+
+    # Keep this stable for Docker CMD and local running.
     uvicorn.run("subgen.api.main:app", host=host, port=port, reload=False)
 
 
