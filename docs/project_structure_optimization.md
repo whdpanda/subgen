@@ -13,6 +13,7 @@
 
 - 删除仓库根目录的 `result.json`（本地运行产物，且未被代码引用）。
 - 在 `.gitignore` 中加入 `result.json`，避免后续误提交本地结果快照。
+- 删除 `src/subgen/agent/tools/envelope.py`（未被任何模块引用的冗余协议封装文件），避免与 `schemas.py`/`tool_names.py` 形成工具协议层碎片。
 
 ---
 
