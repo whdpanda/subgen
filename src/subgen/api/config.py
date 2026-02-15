@@ -17,8 +17,9 @@ class ApiConfig:
     Keep it dependency-light to avoid extra deps in Docker.
 
     Step 2 adds:
-      - allowed_roots allowlist
-      - output dir creation policy
+      - Redis/RQ config
+    Step 3 adds:
+      - Job root (on PVC)
     """
 
     # Default mount root inside container (e.g. /data).
@@ -27,6 +28,14 @@ class ApiConfig:
     # Optional allowlist override. If empty -> [data_root].
     # Example: SUBGEN_ALLOWED_ROOTS="/data,/mnt/share"
     allowed_roots: List[str] = None  # type: ignore[assignment]
+
+    # Jobs root directory (must be under allowed roots in K8s manifests)
+    job_root: str = os.getenv("JOB_ROOT", "/data/jobs")
+
+    # Redis/RQ
+    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    rq_queue_name: str = os.getenv("RQ_QUEUE_NAME", "subgen")
+    rq_job_timeout_sec: int = int(os.getenv("RQ_JOB_TIMEOUT", "5400"))
 
     # Logging knobs (Step 4 will fully wire debug.log per request)
     log_level: str = os.getenv("SUBGEN_API_LOG_LEVEL", "INFO")
