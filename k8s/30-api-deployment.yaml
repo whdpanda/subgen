@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: subgen-api
+  namespace: subgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: subgen-api
+  template:
+    metadata:
+      labels:
+        app: subgen-api
+    spec:
+      containers:
+        - name: api
+          # 同一个镜像：通过 command/args 区分 api/worker
+          image: subgen:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+
+          envFrom:
+            - configMapRef:
+                name: subgen-config
+
+          # 你当前 app 对象在 subgen.api.app:app
+          command: ["uvicorn"]
+          args:
+            - "subgen.api.app:app"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--proxy-headers"
+            - "--forwarded-allow-ips=*"
+
+          volumeMounts:
+            - name: subgen-data
+              mountPath: /data
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+
+      volumes:
+        - name: subgen-data
+          persistentVolumeClaim:
+            claimName: subgen-data

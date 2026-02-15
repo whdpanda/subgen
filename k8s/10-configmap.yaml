@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: subgen-config
+  namespace: subgen
+data:
+  # Core
+  SUBGEN_ALLOWED_ROOTS: "/data"
+  SUBGEN_DATA_ROOT: "/data"
+  SUBGEN_JOB_ROOT: "/data/jobs"
+  SUBGEN_ALLOW_CREATE_OUTPUT_DIR: "true"
+
+  # RQ/Redis
+  SUBGEN_REDIS_URL: "redis://subgen-redis:6379/0"
+  SUBGEN_RQ_QUEUE_NAME: "subgen"
+  SUBGEN_RQ_JOB_TIMEOUT_SEC: "3600"
+
+  # Optional defaults (worker loop)
+  SUBGEN_QUALITY_MAX_PASSES: "2"
+  SUBGEN_TARGET_LANG_DEFAULT: "zh"
+  SUBGEN_ZH_LAYOUT_DEFAULT: "true"
+  SUBGEN_EMIT_DEFAULT: "zh-only"
+
+  # Logging (process-level log file; request/job debug.log stays under job dir via your logging_context)
+  SUBGEN_LOG_PATH: "/data/logs/api.log"
