@@ -4,6 +4,8 @@ metadata:
   name: subgen-data
   namespace: subgen
 spec:
+  # ReadWriteOnce keeps storage broadly compatible; it also means
+  # horizontal worker scaling requires RWX storage or same-node placement.
   accessModes:
     - ReadWriteOnce
   resources:

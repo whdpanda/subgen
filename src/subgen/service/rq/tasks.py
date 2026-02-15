@@ -9,7 +9,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
-from rq import get_current_job
+try:
+    from rq import get_current_job
+except ModuleNotFoundError:
+    def get_current_job() -> None:
+        return None
 
 from subgen.agent.loop import LoopConfig, run_pr4c_closed_loop, safe_invoke_flat
 from subgen.agent.tools import build_agent_tools
@@ -97,13 +101,42 @@ def _write_status(store: JobSpecStore, job_id: str, status: JobStatus) -> None:
     store.write_status(job_id, status)
 
 
+def _coerce_enum_by_name_or_value(enum_cls: Any, value: Any) -> Any:
+    if isinstance(value, enum_cls):
+        return value
+    if isinstance(value, str):
+        try:
+            return enum_cls(value)
+        except Exception:
+            pass
+        if value in enum_cls.__members__:
+            return enum_cls[value]
+    return value
+
+
 def _load_spec(store: JobSpecStore, job_id: str) -> JobSpec:
-    return store.read_as_model(job_id, JobSpec, "spec")
+    try:
+        return store.read_as_model(job_id, JobSpec, "spec")
+    except Exception:
+        raw = store.read_spec_dict(job_id)
+        raw = dict(raw or {})
+        raw["kind"] = _coerce_enum_by_name_or_value(JobKind, raw.get("kind"))
+        raw.setdefault("job_root", str(store.job_dir(job_id)))
+        return JobSpec.model_validate(raw)
 
 
 def _load_status_or_init(store: JobSpecStore, spec: JobSpec) -> JobStatus:
     if store.has_status(spec.job_id):
-        return store.read_as_model(spec.job_id, JobStatus, "status")
+        try:
+            return store.read_as_model(spec.job_id, JobStatus, "status")
+        except Exception:
+            raw = store.read_status_dict(spec.job_id)
+            raw = dict(raw or {})
+            raw["kind"] = _coerce_enum_by_name_or_value(JobKind, raw.get("kind", spec.kind))
+            raw["state"] = _coerce_enum_by_name_or_value(JobState, raw.get("state", JobState.QUEUED))
+            raw.setdefault("timestamps", {"created_at": spec.created_at})
+            raw.setdefault("worker", {"worker_id": None, "attempt": 1})
+            return JobStatus.model_validate(raw)
 
     return JobStatus(
         job_id=spec.job_id,

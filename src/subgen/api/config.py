@@ -30,12 +30,15 @@ class ApiConfig:
     allowed_roots: List[str] = None  # type: ignore[assignment]
 
     # Jobs root directory (must be under allowed roots in K8s manifests)
-    job_root: str = os.getenv("JOB_ROOT", "/data/jobs")
+    # Backward compatible env names:
+    # - new: SUBGEN_JOB_ROOT / SUBGEN_REDIS_URL / SUBGEN_RQ_* (used by k8s manifests)
+    # - legacy: JOB_ROOT / REDIS_URL / RQ_*
+    job_root: str = os.getenv("SUBGEN_JOB_ROOT", os.getenv("JOB_ROOT", "/data/jobs"))
 
     # Redis/RQ
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    rq_queue_name: str = os.getenv("RQ_QUEUE_NAME", "subgen")
-    rq_job_timeout_sec: int = int(os.getenv("RQ_JOB_TIMEOUT", "5400"))
+    redis_url: str = os.getenv("SUBGEN_REDIS_URL", os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    rq_queue_name: str = os.getenv("SUBGEN_RQ_QUEUE_NAME", os.getenv("RQ_QUEUE_NAME", "subgen"))
+    rq_job_timeout_sec: int = int(os.getenv("SUBGEN_RQ_JOB_TIMEOUT_SEC", os.getenv("RQ_JOB_TIMEOUT", "5400")))
 
     # Logging knobs (Step 4 will fully wire debug.log per request)
     log_level: str = os.getenv("SUBGEN_API_LOG_LEVEL", "INFO")
