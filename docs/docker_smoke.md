@@ -23,6 +23,9 @@ docker compose up --build
 curl http://127.0.0.1:8000/health
 ```
 
+> 注：`/v1/subtitles/*` 路由现为异步任务模式（返回 `202` + `job_id`）。
+> 轮询方式与完整接口请见 [`API_ASYNC_JOBS.md`](./API_ASYNC_JOBS.md)。
+
 ## 4) API 调用示例
 
 ### 4.1 generate
