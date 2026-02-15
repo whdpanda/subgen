@@ -1,5 +1,13 @@
 # SubGen 项目介绍（重构整理版）
 
+## 文档导航（新增）
+- 部署入口：[`README.md`](./README.md)
+- 异步 Jobs API：[`API_ASYNC_JOBS.md`](./API_ASYNC_JOBS.md)
+- Kubernetes Quickstart：[`DEPLOY_K8S.md`](./DEPLOY_K8S.md)
+- 运维说明：[`OPERATIONS.md`](./OPERATIONS.md)
+
+---
+
 ## 1. 项目定位
 SubGen 是一个**高质量优先**的视频字幕生成项目，核心目标是：
 - 从视频中提取音频并进行 ASR；
