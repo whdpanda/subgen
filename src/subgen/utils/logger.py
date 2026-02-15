@@ -63,6 +63,10 @@ def get_logger(name: str = "subgen") -> logging.Logger:
     """
     Returns a process-wide logger with idempotent handler setup.
     If not configured yet, attaches a minimal stderr console handler at INFO.
+
+    NOTE:
+    - This is a convenience wrapper; for the main "subgen" logger,
+      prefer configure_logging() on startup.
     """
     logger = logging.getLogger(name)
     if logger.handlers:

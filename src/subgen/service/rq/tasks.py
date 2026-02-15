@@ -1,3 +1,4 @@
+# src/subgen/service/rq/tasks.py
 from __future__ import annotations
 
 import os
@@ -31,7 +32,7 @@ from subgen.api.schemas.jobs import (
 )
 from subgen.api.utils.logging_context import request_debug_logging
 from subgen.core.jobs import JobSpecStore
-from subgen.utils.logger import get_logger
+from subgen.utils.logger import get_logger, set_trace_id, clear_trace_id
 
 logger = get_logger("subgen.worker")
 
@@ -60,9 +61,6 @@ def _tool_map() -> Dict[str, Any]:
 
 
 def _loop_cfg_from_env() -> LoopConfig:
-    """
-    Same semantics as API sync version, but used in worker.
-    """
     cfg = LoopConfig()
 
     mp = os.getenv("SUBGEN_QUALITY_MAX_PASSES")
@@ -88,18 +86,10 @@ def _loop_cfg_from_env() -> LoopConfig:
 
 
 def _cpu_safe_pipeline_defaults(pipeline_args: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    PR#6 CPU-first baseline:
-    - If caller didn't set device knobs, force CPU so workers won't try CUDA by default.
-    This avoids "default cuda" in PipelineConfig causing immediate failures on CPU cluster.
-    """
     out = dict(pipeline_args or {})
-
     out.setdefault("asr_device", "cpu")
     out.setdefault("translator_device", "cpu")
     out.setdefault("demucs_device", "cpu")
-
-    # demucs optional; if enabled but device omitted, keep cpu (already set)
     return out
 
 
@@ -115,7 +105,6 @@ def _load_status_or_init(store: JobSpecStore, spec: JobSpec) -> JobStatus:
     if store.has_status(spec.job_id):
         return store.read_as_model(spec.job_id, JobStatus, "status")
 
-    # Fallback (should be rare): reconstruct minimal status
     return JobStatus(
         job_id=spec.job_id,
         kind=spec.kind,
@@ -167,7 +156,6 @@ def _mark_failed(store: JobSpecStore, status: JobStatus, code: str, detail: str)
     status.error = JobError(code=code, detail=detail)  # type: ignore[misc]
     _write_status(store, status.job_id, status)
 
-    # Best-effort: also write a result.json for uniform client handling
     store.write_result(
         status.job_id,
         JobResult(
@@ -196,7 +184,6 @@ def _run_generate(spec: JobSpec, job_dir: str) -> Dict[str, Any]:
     quality_args = inputs.get("quality_args")
     fix_args = inputs.get("fix_args")
 
-    # Ensure CPU baseline unless user explicitly overrides
     pipeline_args = _cpu_safe_pipeline_defaults(dict(pipeline_args))
     pipeline_args.setdefault("job_id", spec.job_id)
 
@@ -303,33 +290,29 @@ def _run_burn(spec: JobSpec, job_dir: str) -> Dict[str, Any]:
 
 def run_job(job_id: str) -> Dict[str, Any]:
     """
-    RQ task entrypoint (referenced by jobs_service.enqueue):
+    RQ task entrypoint:
       "subgen.service.rq.tasks.run_job"
-
-    Execution contract:
-    - Read spec.json
-    - Update status.json (started/running/succeeded/failed)
-    - Write result.json on success (and best-effort on failure)
-    - debug.log is ALWAYS written to job_dir (NOT user out_dir)
     """
+    # Correlate all worker logs by job_id
+    set_trace_id(job_id)
+
     cfg = load_config()
     store = JobSpecStore(cfg.job_root)
 
     worker_id = os.getenv("HOSTNAME") or os.getenv("COMPUTERNAME") or "worker"
-    rq_job = None
     try:
-        rq_job = get_current_job()
+        _ = get_current_job()
     except Exception:
-        rq_job = None
+        pass
 
     spec = _load_spec(store, job_id)
     status = _load_status_or_init(store, spec)
 
-    # Mark started
     status = _mark_started(store, status, worker_id=worker_id)
 
     job_dir = str(Path(cfg.job_root) / job_id)
     try:
+        logger.info("JOB_START job_id=%s kind=%s job_dir=%s", job_id, spec.kind.value, job_dir)
         _mark_running(store, status, progress=0.05, message="running")
 
         if spec.kind == JobKind.SUBTITLES_GENERATE:
@@ -361,10 +344,7 @@ def run_job(job_id: str) -> Dict[str, Any]:
                 ok=ok,
                 primary_path=final_srt if isinstance(final_srt, str) else None,
                 srt_paths=[final_srt] if isinstance(final_srt, str) else None,
-                outputs={
-                    "srt_path": final_srt,
-                    "report_path": report_path,
-                },
+                outputs={"srt_path": final_srt, "report_path": report_path},
                 artifacts={"raw": out},
                 meta=out.get("meta") if isinstance(out.get("meta"), dict) else {},
             )
@@ -391,18 +371,13 @@ def run_job(job_id: str) -> Dict[str, Any]:
         _mark_running(store, status, progress=0.95, message="finalizing")
         _mark_succeeded(store, status, result)
 
-        # Return something tiny to RQ (disk is the source of truth)
-        return {
-            "ok": True,
-            "job_id": job_id,
-            "kind": spec.kind.value,
-            "primary_path": result.primary_path,
-        }
+        logger.info("JOB_DONE job_id=%s kind=%s ok=%s", job_id, spec.kind.value, result.ok)
+        return {"ok": True, "job_id": job_id, "kind": spec.kind.value, "primary_path": result.primary_path}
 
     except Exception as e:
         tb = traceback.format_exc()
-        logger.error("Job failed: job_id=%s kind=%s err=%s", job_id, getattr(spec.kind, "value", spec.kind), e)
+        logger.error("JOB_FAILED job_id=%s kind=%s err=%s", job_id, getattr(spec.kind, "value", spec.kind), e)
         _mark_failed(store, status, code="JOB_FAILED", detail=f"{e}\n{tb}")
-
-        # Re-raise so RQ marks job as failed too
         raise
+    finally:
+        clear_trace_id()

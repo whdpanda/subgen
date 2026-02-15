@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from rq import Queue
 from rq.job import Job
@@ -23,6 +23,9 @@ from subgen.api.schemas.jobs import (
     JobSpec,
 )
 from subgen.core.jobs import JobSpecStore
+from subgen.utils.logger import get_logger
+
+logger = get_logger("subgen.jobs_service")
 
 
 def _utc_now() -> datetime:
@@ -48,7 +51,7 @@ def _is_under_roots(p: Path, roots: list[str]) -> bool:
             rr_resolved = rr.resolve(strict=False)
         except Exception:
             rr_resolved = rr
-        # Path.is_relative_to is py>=3.9; we implement robustly
+
         try:
             rp.relative_to(rr_resolved)
             return True
@@ -78,38 +81,24 @@ class EnqueueResult:
 
 class JobsService:
     """
-    Step 3 service: create job + persist spec/status + enqueue to RQ + query status/result.
+    Create job + persist spec/status + enqueue to RQ + query status/result.
 
-    IMPORTANT DESIGN CHOICES (to avoid refactor later):
-    - Use job_id as the RQ Job ID. This makes mapping stable & simple.
-    - Persist spec/status/result to disk as the source of truth for UI/clients.
-    - RQ is used for execution & runtime state hints only.
+    Design:
+    - Use job_id as RQ job id (stable mapping)
+    - Disk (spec/status/result) is the source of truth
+    - RQ is execution + hints only
     """
 
-    def __init__(
-        self,
-        cfg: ApiConfig,
-        store: JobSpecStore,
-        queue: Queue,
-    ) -> None:
+    def __init__(self, cfg: ApiConfig, store: JobSpecStore, queue: Queue) -> None:
         self.cfg = cfg
         self.store = store
         self.queue = queue
 
-        # Validate job_root early
+        # Validate global job_root early
         _require_abs_under_roots(str(self.store.job_root), self.cfg.allowed_roots, "JOB_ROOT")
 
-    # -------------------------
-    # Job ID
-    # -------------------------
-
     def new_job_id(self) -> str:
-        # 32 hex chars, stable and URL-friendly
         return uuid.uuid4().hex
-
-    # -------------------------
-    # Create & enqueue
-    # -------------------------
 
     def create_and_enqueue(
         self,
@@ -120,29 +109,20 @@ class JobsService:
         meta: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None,
     ) -> EnqueueResult:
-        """
-        Create job directory + write spec/status + enqueue.
-        Returns the spec + initial status (queued).
-
-        NOTE: Step 4 will implement actual task functions. For now we enqueue a stable task symbol.
-        """
         jid = job_id or self.new_job_id()
 
-        # Ensure no collision on disk or in RQ
         if self.store.job_dir(jid).exists() or self._rq_job_exists(jid):
             raise ValueError(f"job_id already exists: {jid}")
 
-        # Job dir + canonical paths
         job_dir = self.store.ensure_job_dir(jid, create_out=True, create_tmp=True)
 
-        # Basic input path checks (non-breaking: only validates keys if present)
         self._validate_common_paths(inputs)
 
         spec = JobSpec(
             job_id=jid,
             kind=kind,
             created_at=_utc_now(),
-            job_root=str(self.store.job_dir(jid)),  # per-job root, not global JOB_ROOT
+            job_root=str(self.store.job_dir(jid)),
             inputs=inputs or {},
             options=options or {},
             meta=meta or {},
@@ -174,39 +154,35 @@ class JobsService:
             artifacts=artifacts,
         )
 
-        # Persist spec/status BEFORE enqueue (so polling works immediately)
+        # Persist before enqueue (polling works immediately)
         self.store.write_spec(jid, spec)
         self.store.write_status(jid, status)
 
-        # Enqueue: job_id == RQ job id
-        # Step 4 will provide the function at this import path:
-        #   subgen.service.rq.tasks.run_job
-        # It will read spec.json and execute based on kind.
-        self.queue.enqueue(
+        # Enqueue (job_id == rq job id) and stamp meta.kind for rq-only fallback.
+        job = self.queue.enqueue(
             "subgen.service.rq.tasks.run_job",
             jid,
             job_id=jid,
             timeout=self.cfg.rq_job_timeout_sec,
-            result_ttl=24 * 3600,   # keep rq meta 24h (disk keeps artifacts)
+            result_ttl=24 * 3600,
             failure_ttl=24 * 3600,
         )
 
+        try:
+            if isinstance(job.meta, dict):
+                job.meta["kind"] = kind.value
+                job.save_meta()
+        except Exception:
+            # Non-fatal; disk is the truth
+            pass
+
+        logger.info("JOB_ENQUEUED job_id=%s kind=%s job_dir=%s", jid, kind.value, str(job_dir))
         return EnqueueResult(spec=spec, status=status)
 
-    # -------------------------
-    # Query (status/result)
-    # -------------------------
-
     def get_status(self, job_id: str) -> JobStatus:
-        """
-        Prefer on-disk status.json (source of truth).
-        If missing (should be rare), fallback to RQ.
-        Also optionally "refresh" status based on RQ hints when disk state is still queued.
-        """
         if self.store.has_status(job_id):
             status = self.store.read_as_model(job_id, JobStatus, "status")
 
-            # Optional: refresh queued->started/running if RQ shows progress
             try:
                 rq_job = self._fetch_rq_job(job_id)
             except Exception:
@@ -216,12 +192,10 @@ class JobsService:
                 refreshed = self._refresh_status_from_rq(status, rq_job)
                 if refreshed is not None:
                     status = refreshed
-                    # Persist refresh to disk (safe, atomic)
                     self.store.write_status(job_id, status)
 
             return status
 
-        # Fallback
         rq_job = self._fetch_rq_job(job_id)
         return self._status_from_rq_only(job_id, rq_job)
 
@@ -248,13 +222,6 @@ class JobsService:
             raise FileNotFoundError(f"RQ job not found: {job_id}") from e
 
     def _validate_common_paths(self, inputs: Dict[str, Any]) -> None:
-        """
-        Step 3: Do minimal but stable validation:
-        - If video_path / srt_path / out_dir / out_path are present, enforce:
-          absolute path AND under allowed_roots.
-        - If out_dir doesn't exist, create it if allow_create_output_dir.
-        This avoids future refactor: later routes/services can reuse this behavior.
-        """
         roots = self.cfg.allowed_roots
 
         if "video_path" in inputs and inputs["video_path"]:
@@ -275,24 +242,16 @@ class JobsService:
                     raise ValueError(f"out_dir does not exist and creation is disabled: {str(out_dir)!r}")
 
     def _refresh_status_from_rq(self, status: JobStatus, rq_job: Job) -> Optional[JobStatus]:
-        """
-        Bring disk status closer to runtime state based on RQ.
-        We do NOT override terminal states on disk (succeeded/failed/canceled).
-        """
         if status.state in (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELED):
             return None
 
-        # rq_job.get_status(): 'queued','started','finished','failed','deferred','canceled'
         rq_status = rq_job.get_status()
 
-        # Map to our states
         if rq_status == "queued":
             desired = JobState.QUEUED
         elif rq_status == "started":
-            # We use RUNNING once worker actually writes RUNNING; but for UI "started" is OK.
             desired = JobState.STARTED if status.state == JobState.QUEUED else status.state
         elif rq_status == "finished":
-            # Worker should have written SUCCEEDED + result.json. If not, keep disk as-is.
             desired = status.state
         elif rq_status == "failed":
             desired = JobState.FAILED
@@ -304,7 +263,6 @@ class JobsService:
         if desired == status.state:
             return None
 
-        # Create a shallow copy by rebuilding the model (pydantic models are immutable only if configured; ours are mutable)
         status.state = desired  # type: ignore[misc]
         status.message = f"rq:{rq_status}"  # type: ignore[misc]
 
@@ -314,7 +272,6 @@ class JobsService:
         if desired in (JobState.FAILED, JobState.CANCELED):
             status.timestamps.finished_at = status.timestamps.finished_at or _utc_now()  # type: ignore[misc]
             if desired == JobState.FAILED and status.error is None:
-                # Best-effort: RQ stores exc_info (string traceback)
                 detail = getattr(rq_job, "exc_info", None) or "rq job failed"
                 status.error = JobError(code="RQ_FAILED", detail=str(detail))  # type: ignore[misc]
 
@@ -349,11 +306,16 @@ class JobsService:
             detail = getattr(rq_job, "exc_info", None) or "rq job failed"
             err = JobError(code="RQ_FAILED", detail=str(detail))
 
+        kind = JobKind.SUBTITLES_GENERATE
+        try:
+            if isinstance(rq_job.meta, dict) and rq_job.meta.get("kind"):
+                kind = JobKind(str(rq_job.meta["kind"]))
+        except Exception:
+            kind = JobKind.SUBTITLES_GENERATE
+
         return JobStatus(
             job_id=job_id,
-            kind=JobKind(rq_job.meta.get("kind", JobKind.SUBTITLES_GENERATE.value))
-            if isinstance(rq_job.meta, dict) and rq_job.meta.get("kind")
-            else JobKind.SUBTITLES_GENERATE,
+            kind=kind,
             state=state,
             progress=None,
             timestamps=ts,

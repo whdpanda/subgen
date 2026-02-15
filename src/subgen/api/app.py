@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from subgen.api.config import load_config
 from subgen.api.middlewares.error_handler import install_error_handlers
 from subgen.api.middlewares.request_context import RequestContextMiddleware
+from subgen.api.middlewares.access_log import AccessLogMiddleware
 from subgen.api.routes import api_router
 from subgen.utils.logger import configure_logging, get_logger
 
@@ -22,8 +23,11 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
-    # Request context first (request_id, optional trace_id)
+    # Request context first (request_id -> trace_id)
     app.add_middleware(RequestContextMiddleware, header_name="X-Request-Id")
+
+    # Access log + basic HTTP metrics
+    app.add_middleware(AccessLogMiddleware)
 
     # Error handlers (stable error JSON, includes request_id)
     install_error_handlers(app)
