@@ -7,8 +7,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from rq import Queue
-from rq.job import Job
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rq import Queue
+    from rq.job import Job
+else:
+    Queue = Any  # type: ignore[misc,assignment]
+    Job = Any  # type: ignore[misc,assignment]
 
 from subgen.api.config import ApiConfig
 from subgen.api.schemas.jobs import (
@@ -30,6 +36,14 @@ logger = get_logger("subgen.jobs_service")
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _job_fetch(job_id: str, connection: Any) -> Any:
+    try:
+        from rq.job import Job as RQJob
+    except ModuleNotFoundError as e:
+        raise RuntimeError("rq package is required for job operations; install subgen runtime dependencies") from e
+    return RQJob.fetch(job_id, connection=connection)
 
 
 def _norm_abs(p: str | Path) -> Path:
@@ -210,14 +224,14 @@ class JobsService:
 
     def _rq_job_exists(self, job_id: str) -> bool:
         try:
-            Job.fetch(job_id, connection=self.queue.connection)  # type: ignore[arg-type]
+            _job_fetch(job_id, connection=self.queue.connection)  # type: ignore[arg-type]
             return True
         except Exception:
             return False
 
     def _fetch_rq_job(self, job_id: str) -> Job:
         try:
-            return Job.fetch(job_id, connection=self.queue.connection)  # type: ignore[arg-type]
+            return _job_fetch(job_id, connection=self.queue.connection)  # type: ignore[arg-type]
         except Exception as e:
             raise FileNotFoundError(f"RQ job not found: {job_id}") from e
 

@@ -4,7 +4,9 @@ metadata:
   name: subgen-worker
   namespace: subgen
 spec:
-  replicas: 2
+  # NOTE: with ReadWriteOnce PVC, keep a single worker replica by default
+  # unless all pods are guaranteed to run on the same node or storage supports RWX.
+  replicas: 1
   selector:
     matchLabels:
       app: subgen-worker

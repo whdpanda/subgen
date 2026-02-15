@@ -10,12 +10,6 @@
 From repo root:
 
 ```bash
-kubectl apply -f k8s/90-kustomization.yaml
-```
-
-Or (recommended) with kustomize:
-
-```bash
 kubectl apply -k k8s/
 ```
 
@@ -42,7 +36,8 @@ curl -s http://127.0.0.1:8080/metrics
 
 ## 5. Scaling guidance
 - **API**: typically 1–2 replicas (stateless; ensure shared `/data` if you scale horizontally).
-- **Worker**: scale by `subgen-worker` replicas.
+- **Worker**: current manifest defaults to **1 replica** because the shared PVC is `ReadWriteOnce`.
+  - If you need multiple workers, use an RWX storage class (or guarantee same-node scheduling before increasing replicas).
 - **Redis**: keep 1 replica for now. For production HA, use managed Redis or a Redis operator.
 
 ## 6. Security notes
