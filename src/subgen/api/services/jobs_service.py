@@ -129,19 +129,21 @@ class JobsService:
     ) -> EnqueueResult:
         jid = job_id or self.new_job_id()
 
+        clean_inputs, rq_job_timeout = self._extract_enqueue_options(inputs)
+
         if self.store.job_dir(jid).exists() or self._rq_job_exists(jid):
             raise ValueError(f"job_id already exists: {jid}")
 
         job_dir = self.store.ensure_job_dir(jid, create_out=True, create_tmp=True)
 
-        self._validate_common_paths(inputs)
+        self._validate_common_paths(clean_inputs)
 
         spec = JobSpec(
             job_id=jid,
             kind=kind,
             created_at=_utc_now(),
             job_root=str(self.store.job_dir(jid)),
-            inputs=inputs or {},
+            inputs=clean_inputs,
             options=options or {},
             meta=meta or {},
         )
@@ -181,7 +183,7 @@ class JobsService:
             "subgen.service.rq.tasks.run_job",
             jid,
             job_id=jid,
-            timeout=self.cfg.rq_job_timeout_sec,
+            job_timeout=rq_job_timeout,
             result_ttl=24 * 3600,
             failure_ttl=24 * 3600,
         )
@@ -196,6 +198,39 @@ class JobsService:
 
         logger.info("JOB_ENQUEUED job_id=%s kind=%s job_dir=%s", jid, kind.value, str(job_dir))
         return EnqueueResult(spec=spec, status=status)
+
+    def _extract_enqueue_options(self, inputs: Dict[str, Any]) -> tuple[Dict[str, Any], int]:
+        """
+        Keep business-function kwargs clean and map timeout-like fields to RQ timeout.
+
+        - Supported source: inputs["pipeline_args"]["timeout"]
+        - If invalid, fallback to configured default timeout.
+        """
+        clean_inputs = dict(inputs or {})
+        rq_job_timeout = self.cfg.rq_job_timeout_sec
+
+        pipeline_args = clean_inputs.get("pipeline_args")
+        if isinstance(pipeline_args, dict):
+            pipeline_args = dict(pipeline_args)
+            timeout_value = pipeline_args.pop("timeout", None)
+            clean_inputs["pipeline_args"] = pipeline_args
+            parsed_timeout = self._parse_positive_timeout(timeout_value)
+            if parsed_timeout is not None:
+                rq_job_timeout = parsed_timeout
+
+        return clean_inputs, rq_job_timeout
+
+    @staticmethod
+    def _parse_positive_timeout(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            timeout = int(value)
+        except Exception:
+            return None
+        if timeout <= 0:
+            return None
+        return timeout
 
     def get_status(self, job_id: str) -> JobStatus:
         if self.store.has_status(job_id):
