@@ -60,7 +60,7 @@ def test_timeout_moved_from_pipeline_args_to_rq_job_timeout(tmp_path: Any) -> No
     )
 
     enq = queue.enqueues[0]
-    assert enq["kwargs"]["timeout"] == 120
+    assert enq["kwargs"]["job_timeout"] == 120
 
     spec = store.read_spec_dict(job_id)
     assert spec["inputs"]["pipeline_args"] == {"foo": "bar"}
@@ -85,7 +85,53 @@ def test_invalid_pipeline_timeout_uses_default_rq_timeout(tmp_path: Any) -> None
     )
 
     enq = queue.enqueues[0]
-    assert enq["kwargs"]["timeout"] == 5400
+    assert enq["kwargs"]["job_timeout"] == 5400
 
     spec = store.read_spec_dict(job_id)
     assert spec["inputs"]["pipeline_args"] == {"foo": "bar"}
+
+
+def test_enqueue_kwargs_are_parsed_as_rq_job_options(tmp_path: Any) -> None:
+    from rq import Queue
+
+    svc, queue, _store = _build_service(tmp_path)
+    out_dir = tmp_path / "out3"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    video_path = tmp_path / "video3.mp4"
+    video_path.write_bytes(b"stub")
+
+    svc.create_and_enqueue(
+        kind=JobKind.SUBTITLES_GENERATE,
+        job_id="jobtimeout03",
+        inputs={
+            "video_path": str(video_path),
+            "out_dir": str(out_dir),
+            "pipeline_args": {"timeout": 321},
+        },
+    )
+
+    enq = queue.enqueues[0]
+    (
+        _func,
+        timeout,
+        _description,
+        _result_ttl,
+        _ttl,
+        _failure_ttl,
+        _depends_on,
+        _job_id,
+        _at_front,
+        _meta,
+        _retry,
+        _repeat,
+        _on_success,
+        _on_failure,
+        _on_stopped,
+        _pipeline,
+        args,
+        kwargs,
+    ) = Queue.parse_args(enq["func"], *enq["args"], **enq["kwargs"])
+
+    assert timeout == 321
+    assert args == ("jobtimeout03",)
+    assert kwargs == {}
