@@ -4,6 +4,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,7 @@ else:
     Job = Any  # type: ignore[misc,assignment]
 
 from subgen.api.config import ApiConfig
+from subgen.api.config import load_config
 from subgen.api.schemas.jobs import (
     JobArtifacts,
     JobError,
@@ -29,6 +31,8 @@ from subgen.api.schemas.jobs import (
     JobSpec,
 )
 from subgen.core.jobs import JobSpecStore
+from subgen.service.rq.conn import get_redis_connection
+from subgen.service.rq.queues import get_queue
 from subgen.utils.logger import get_logger
 
 logger = get_logger("subgen.jobs_service")
@@ -338,3 +342,13 @@ class JobsService:
             error=err,
             artifacts=None,
         )
+
+
+@lru_cache(maxsize=1)
+def get_jobs_service() -> JobsService:
+    """Return the process-wide JobsService singleton used by API routes."""
+    cfg = load_config()
+    store = JobSpecStore(cfg.job_root)
+    conn = get_redis_connection(cfg.redis_url)
+    q = get_queue(conn, cfg.rq_queue_name, cfg.rq_job_timeout_sec)
+    return JobsService(cfg=cfg, store=store, queue=q)
