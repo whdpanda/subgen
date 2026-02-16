@@ -32,3 +32,26 @@ Thumbs.db
 
 # ---- 本地运行结果快照 ----
 result.json
+
+# ---- runtime data (local only) ----
+data/
+# 如果你希望保留目录结构但不提交内容：可以放一个 data/.gitkeep 并取消忽略它
+!data/.gitkeep
+!data/in/.gitkeep
+!data/out/.gitkeep
+!data/jobs/.gitkeep
+!data/logs/.gitkeep
+
+# ---- media / test assets (avoid huge files) ----
+*.webm
+*.mp4
+*.mkv
+*.mov
+*.wav
+*.mp3
+
+# ---- temp files ----
+*.tmp
+*.temp
+*.swp
+*.swo
