@@ -21,6 +21,11 @@ class InvalidPathError(SubgenApiError):
         super().__init__(code="invalid_path", message=message, status_code=400, details=details)
 
 
+class InvalidRequestError(SubgenApiError):
+    def __init__(self, message: str, *, details: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(code="invalid_request", message=message, status_code=400, details=details)
+
+
 class NotFoundError(SubgenApiError):
     def __init__(self, message: str, *, details: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(code="not_found", message=message, status_code=404, details=details)
