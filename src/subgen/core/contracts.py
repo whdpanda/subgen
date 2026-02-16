@@ -49,8 +49,15 @@ class PipelineConfig:
 
     # ASR
     asr_model: str = "large-v3"
-    asr_device: str = "cuda"
-    asr_compute_type: Optional[str] = "float16"
+
+    # IMPORTANT:
+    # - Use "auto" so GPU nodes pick cuda automatically, CPU nodes pick cpu automatically.
+    # - Keep compute_type None so LocalWhisperASR derives:
+    #     cuda -> float16, cpu -> int8
+    #   This prevents the cpu+float16 crash.
+    asr_device: str = "auto"
+    asr_compute_type: Optional[str] = None
+
     asr_beam_size: int = 1
     asr_best_of: int = 1
     asr_vad_filter: bool = False

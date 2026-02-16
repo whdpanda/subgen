@@ -27,6 +27,19 @@ def _auto_device() -> str:
     return "cpu"
 
 
+def _cuda_available() -> bool:
+    try:
+        import torch  # optional
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def _is_cuda_device(device: str) -> bool:
+    d = (device or "").lower()
+    return d == "cuda" or d.startswith("cuda:")
+
+
 def _avg_logprob_to_conf(avg_logprob: Optional[float]) -> Optional[float]:
     if avg_logprob is None:
         return None
@@ -270,10 +283,26 @@ class LocalWhisperASR(ASRProvider):
     ):
         self.model_name = model_name
         self.device = _auto_device() if device == "auto" else device
-        if compute_type is None:
-            compute_type = "float16" if self.device == "cuda" else "int8"
-        self.compute_type = compute_type
 
+        # Derive compute_type if not given.
+        if compute_type is None:
+            compute_type = "float16" if _is_cuda_device(self.device) else "int8"
+
+        # Guardrail:
+        # If user asks for float16, we MUST be on CUDA. Fail fast with a clear message.
+        ct = (compute_type or "").lower()
+        if ct in ("float16", "fp16") and not _is_cuda_device(self.device):
+            raise ValueError(
+                f"compute_type={compute_type} requires CUDA GPU, but device={self.device}. "
+                f"Fix: request GPU (K8s nvidia.com/gpu / Docker --gpus all) and set asr_device=cuda/auto."
+            )
+        if _is_cuda_device(self.device) and not _cuda_available():
+            raise ValueError(
+                f"device={self.device} requested but CUDA is not available in this runtime. "
+                f"Fix: use a CUDA-enabled torch build + expose GPU to container/pod."
+            )
+
+        self.compute_type = compute_type
         self.beam_size = beam_size
         self.best_of = best_of
         self.vad_filter = vad_filter
@@ -283,7 +312,9 @@ class LocalWhisperASR(ASRProvider):
         except ImportError as e:
             raise ImportError("faster-whisper is not installed. Run: pip install faster-whisper") from e
 
-        logger.info(f"Loading faster-whisper model={self.model_name}, device={self.device}, compute_type={self.compute_type}")
+        logger.info(
+            f"Loading faster-whisper model={self.model_name}, device={self.device}, compute_type={self.compute_type}"
+        )
         self.model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
 
     def _fw_transcribe(self, audio_path: Path, language: Optional[str]):
@@ -372,7 +403,6 @@ class LocalWhisperASR(ASRProvider):
         if end <= start:
             return []
 
-        # 这里 _fw_transcribe_range 返回 4 个值（含 padding 后的 cut_start/cut_end）
         fw_segments, _info, cut_start, cut_end = self._fw_transcribe_range(
             audio_path=audio_path,
             start=start,
@@ -385,9 +415,6 @@ class LocalWhisperASR(ASRProvider):
             condition_on_previous_text=condition_on_previous_text,
         )
 
-        # IMPORTANT FIX:
-        # - fw_segments times are RELATIVE to the cut audio (0..cut_dur)
-        # - do reliability checks in RELATIVE time, then shift to ABSOLUTE time at the end
         cut_dur = float(cut_end) - float(cut_start)
 
         words_rel = _collect_words_from_fw_segments(fw_segments, shift=0.0)
@@ -434,16 +461,13 @@ class LocalWhisperASR(ASRProvider):
         detected_lang = getattr(info, "language", None) or "unknown"
         audio_end = float(getattr(fw_segments[-1], "end", 0.0)) if fw_segments else 0.0
 
-        # 1) primary output for V1.2: words
         words = _collect_words_from_fw_segments(fw_segments, shift=0.0)
         if not _words_are_reliable(words, fw_segments, audio_end):
             logger.warning("Word timestamps unreliable/holes -> fallback pseudo-words.")
             words = _collect_pseudo_words_from_fw_segments(fw_segments, shift=0.0)
 
-        # 2) V1.2 contract: keep segments as a minimal placeholder (pipeline will re-segment)
         segments: List[Segment] = []
         if audio_end > 0:
             segments = [Segment(start=0.0, end=audio_end, text="", confidence=None)]
 
-        # 3) return
         return Transcript(language=detected_lang, segments=segments, words=words)

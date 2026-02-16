@@ -15,8 +15,26 @@ spec:
       labels:
         app: subgen-worker
     spec:
+      # ---- GPU scheduling ----
+      # 说明：
+      # 1) 下面的 GPU resources 会让 Pod 只能调度到有 nvidia.com/gpu 资源的节点。
+      # 2) 若你的 GPU 节点有 taint（常见于运维配置），需要配套 tolerations（见下）。
+      #
+      # 如果你的集群给 GPU 节点打了特定 label，可取消注释 nodeSelector 并改成你的 label：
+      # nodeSelector:
+      #   accelerator: nvidia
+      #
+      # 如果你的 GPU 节点被 taint 了（例如 key=accelerator,value=nvidia,effect=NoSchedule），
+      # 需要加 tolerations（按你的实际 taint 修改）：
+      # tolerations:
+      #   - key: "accelerator"
+      #     operator: "Equal"
+      #     value: "nvidia"
+      #     effect: "NoSchedule"
+
       containers:
         - name: worker
+          # 建议这里用你构建的 GPU 镜像 tag（例如 subgen:pr6-gpu 或你推到 registry 的版本）
           image: subgen:latest
           imagePullPolicy: IfNotPresent
 
@@ -36,9 +54,13 @@ spec:
             requests:
               cpu: "1000m"
               memory: "1Gi"
+              # GPU request（可选；只写 limits 也行，但建议 requests/limits 一致）
+              nvidia.com/gpu: "1"
             limits:
               cpu: "2000m"
               memory: "4Gi"
+              # GPU limit（关键：没有这个，就不会拿到 GPU）
+              nvidia.com/gpu: "1"
 
       volumes:
         - name: subgen-data

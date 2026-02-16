@@ -23,7 +23,6 @@ JOB_DIR      := DATA_DIR + "/jobs"
 LOG_DIR      := DATA_DIR + "/logs"
 
 # ---- Compute host absolute mount path for Docker Desktop on Windows ----
-# Example: C:\Users\xxx\projects\subgen -> C:/Users/xxx/projects/subgen
 PROJECT_ROOT_SLASH := replace(justfile_directory(), "\\", "/")
 DATA_MOUNT         := PROJECT_ROOT_SLASH + "/" + DATA_DIR
 
@@ -39,6 +38,16 @@ RQ_QUEUE     := "subgen"
 JOB_TIMEOUT  := "3600"
 REQ_ID       := "pr6-gen-001"
 
+# ---- GPU toggle (for float16 on CUDA) ----
+# Use: `just USE_GPU=true up` (default true) or `just USE_GPU=false up`
+USE_GPU := "true"
+GPU_ARGS := if USE_GPU == "true" { "--gpus all" } else { "" }
+
+# ---- Watch settings ----
+# Default: wait as long as JOB_TIMEOUT
+WATCH_TIMEOUT_SEC := JOB_TIMEOUT
+WATCH_INTERVAL_SEC := "2"
+
 # ---- IMPORTANT: disable MSYS path conversion for docker CLI args ----
 DOCKER_ENV   := "MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL=*"
 
@@ -53,14 +62,16 @@ help:
 	@echo "  just gen          # POST /v1/subtitles/generate (prints response + HTTP code)"
 	@echo "  just gen-save     # same as gen but also writes .tmp/resp.json"
 	@echo "  just jobid        # prints job_id extracted from .tmp/resp.json"
-	@echo "  just watch        # poll /v1/jobs/<job_id> until terminal state"
+	@echo "  just watch        # poll /v1/jobs/<job_id> until terminal state (or timeout)"
 	@echo "  just result       # GET /v1/jobs/<job_id>/result"
 	@echo "  just jobfiles     # list spec/status/result/debug.log on host"
 	@echo "  just metrics      # fetch /metrics"
 	@echo "  just fail-path    # illegal path test"
 	@echo "  just fail-missing # missing input test"
 	@echo
-	@echo "Override vars: just IMAGE=subgen:pr6 PORT=8001 up"
+	@echo "Override vars examples:"
+	@echo "  just IMAGE=subgen:pr6-gpu USE_GPU=true up"
+	@echo "  just WATCH_TIMEOUT_SEC=3600 watch"
 
 prep:
 	@echo
@@ -74,9 +85,9 @@ prep:
 up: redis api worker
 	@echo
 	@echo "==== Up done ===="
-	@{{DOCKER_ENV}} docker ps --filter "name=^/{{REDIS_NAME}}$$"  --format 'table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}' || true
-	@{{DOCKER_ENV}} docker ps --filter "name=^/{{API_NAME}}$$"    --format 'table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}' || true
-	@{{DOCKER_ENV}} docker ps --filter "name=^/{{WORKER_NAME}}$$" --format 'table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}' || true
+	@{{DOCKER_ENV}} docker ps --filter 'name=^/{{REDIS_NAME}}$$'  --format 'table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}' || true
+	@{{DOCKER_ENV}} docker ps --filter 'name=^/{{API_NAME}}$$'    --format 'table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}' || true
+	@{{DOCKER_ENV}} docker ps --filter 'name=^/{{WORKER_NAME}}$$' --format 'table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}' || true
 
 down:
 	@echo
@@ -99,7 +110,9 @@ api:
 	@echo "==== Start API ===="
 	-{{DOCKER_ENV}} docker rm -f "{{API_NAME}}" >/dev/null 2>&1 || true
 	@echo "DATA_MOUNT={{DATA_MOUNT}}"
+	@echo "USE_GPU={{USE_GPU}}  GPU_ARGS={{GPU_ARGS}}"
 
+	# API 默认不需要 GPU；如果你的 API 里也会直接跑 pipeline，可把 {{GPU_ARGS}} 加进来。
 	{{DOCKER_ENV}} docker run -d --name "{{API_NAME}}" \
 	-p {{PORT}}:8000 \
 	-v "{{DATA_MOUNT}}:/data" \
@@ -114,15 +127,17 @@ api:
 	"{{IMAGE}}"
 
 	@echo "API started: {{API_NAME}}  ->  {{BASE_URL}}"
-	@{{DOCKER_ENV}} docker ps --filter "name=^/{{API_NAME}}$$" --format "table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}"
+	@{{DOCKER_ENV}} docker ps --filter 'name=^/{{API_NAME}}$$' --format "table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}"
 
 worker:
 	@echo
 	@echo "==== Start Worker ===="
 	-{{DOCKER_ENV}} docker rm -f "{{WORKER_NAME}}" >/dev/null 2>&1 || true
 	@echo "DATA_MOUNT={{DATA_MOUNT}}"
+	@echo "USE_GPU={{USE_GPU}}  GPU_ARGS={{GPU_ARGS}}"
 
 	{{DOCKER_ENV}} docker run -d --name "{{WORKER_NAME}}" \
+	{{GPU_ARGS}} \
 	-v "{{DATA_MOUNT}}:/data" \
 	-e SUBGEN_ALLOWED_ROOTS=/data \
 	-e SUBGEN_DATA_ROOT=/data \
@@ -135,7 +150,7 @@ worker:
 	python -m subgen.service.rq.worker_main
 
 	@echo "Worker started: {{WORKER_NAME}}"
-	@{{DOCKER_ENV}} docker ps --filter "name=^/{{WORKER_NAME}}$$" --format "table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}"
+	@{{DOCKER_ENV}} docker ps --filter 'name=^/{{WORKER_NAME}}$$' --format "table {{ "{{" }}.Names{{ "}}" }}\t{{ "{{" }}.Status{{ "}}" }}\t{{ "{{" }}.Ports{{ "}}" }}"
 
 logs-api:
 	@echo
@@ -177,8 +192,8 @@ gen-save:
 jobid:
 	@echo
 	@echo "==== Extract job_id ===="
-	test -f .tmp/resp.json || (echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1)
-	python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")'
+	@test -f .tmp/resp.json || (echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1)
+	@python -c "import json; d=json.load(open('.tmp/resp.json','r',encoding='utf-8')); print(d.get('job_id') or d.get('id') or '')"
 
 watch:
 	@echo
@@ -188,41 +203,42 @@ watch:
 	@JOB_ID="$(python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")')" ; \
 	test -n "$JOB_ID" || (echo "job_id not found in .tmp/resp.json"; exit 1) ; \
 	echo "job_id=$JOB_ID" ; \
-	for i in $(seq 1 120); do \
-	resp="$(curl -fsS "{{BASE_URL}}/v1/jobs/$JOB_ID")" ; \
-	echo "$resp" ; \
-	state="$(echo "$resp" | python -c 'import json,sys; data=json.load(sys.stdin); print(data.get("state") or data.get("status") or "")')" ; \
-	if [[ "$state" == "succeeded" || "$state" == "failed" ]]; then \
-	echo "terminal state=$state" ; \
 	echo "$JOB_ID" > .tmp/job_id.txt ; \
+	max_iter="$$(python -c 'import math; print(max(1, int(int("{{WATCH_TIMEOUT_SEC}}")/int("{{WATCH_INTERVAL_SEC}}"))))')" ; \
+	for i in $$(seq 1 "$$max_iter"); do \
+	resp="$$(curl -fsS "{{BASE_URL}}/v1/jobs/$$JOB_ID")" ; \
+	echo "$$resp" ; \
+	state="$$(echo "$$resp" | python -c 'import json,sys; data=json.load(sys.stdin); print(data.get("state") or data.get("status") or "")')" ; \
+	if [[ "$$state" == "succeeded" || "$$state" == "failed" ]]; then \
+	echo "terminal state=$$state" ; \
 	exit 0 ; \
 	fi ; \
-	sleep 2 ; \
+	sleep "{{WATCH_INTERVAL_SEC}}" ; \
 	done ; \
-	echo "Timeout waiting job" ; \
-	exit 1
+	echo "Timeout waiting job (state not terminal yet). You can rerun: just watch" ; \
+	exit 0
 
 result:
 	@echo
 	@echo "==== GET /v1/jobs/<job_id>/result ===="
-	test -f .tmp/job_id.txt || (echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1)
-	JOB_ID="$$(cat .tmp/job_id.txt)"
+	@test -f .tmp/job_id.txt || (echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1)
+	@JOB_ID="$$(cat .tmp/job_id.txt)" ; \
 	curl -fsS "{{BASE_URL}}/v1/jobs/$$JOB_ID/result" ; echo
 
 jobfiles:
 	@echo
 	@echo "==== Show job files on host ===="
-	test -f .tmp/job_id.txt || (echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1)
-	JOB_ID="$$(cat .tmp/job_id.txt)"
-	echo "Host path: {{JOB_DIR}}/$$JOB_ID"
-	ls -lah "{{JOB_DIR}}/$$JOB_ID" || true
-	echo "---- spec.json ----"
-	test -f "{{JOB_DIR}}/$$JOB_ID/spec.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/spec.json" || true
-	echo "---- status.json ---"
-	test -f "{{JOB_DIR}}/$$JOB_ID/status.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/status.json" || true
-	echo "---- result.json ---"
-	test -f "{{JOB_DIR}}/$$JOB_ID/result.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/result.json" || true
-	echo "---- debug.log ----"
+	@test -f .tmp/job_id.txt || (echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1)
+	@JOB_ID="$$(cat .tmp/job_id.txt)" ; \
+	echo "Host path: {{JOB_DIR}}/$$JOB_ID" ; \
+	ls -lah "{{JOB_DIR}}/$$JOB_ID" || true ; \
+	echo "---- spec.json ----" ; \
+	test -f "{{JOB_DIR}}/$$JOB_ID/spec.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/spec.json" || true ; \
+	echo "---- status.json ---" ; \
+	test -f "{{JOB_DIR}}/$$JOB_ID/status.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/status.json" || true ; \
+	echo "---- result.json ---" ; \
+	test -f "{{JOB_DIR}}/$$JOB_ID/result.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/result.json" || true ; \
+	echo "---- debug.log ----" ; \
 	test -f "{{JOB_DIR}}/$$JOB_ID/debug.log" && tail -n 200 "{{JOB_DIR}}/$$JOB_ID/debug.log" || true
 
 metrics:

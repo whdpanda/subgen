@@ -1,4 +1,3 @@
-# Dockerfile
 FROM python:3.11-slim
 
 # --- System deps ---
@@ -12,16 +11,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY . /app
 
+# --- Build args ---
+# 1) INSTALL_EXTRAS controls project extras:
+#    - agent       : LangChain agent runtime
+#    - agent_rag   : agent + rag
+#    - all         : agent + rag + dev
+#
+# 2) TORCH_VARIANT controls torch wheels channel:
+#    - cpu   : CPU-only wheels (no GPU)
+#    - cu121 : CUDA 12.1 wheels (GPU)
+#    - cu118 : CUDA 11.8 wheels (GPU)
+ARG INSTALL_EXTRAS=agent
+ARG TORCH_VARIANT=cpu
+
 # --- Python deps ---
 # 1) Upgrade pip
-# 2) Install PyTorch CPU wheels explicitly (prevents pulling CUDA builds)
+# 2) Install PyTorch wheels based on TORCH_VARIANT
 # 3) Install demucs
-# 4) Install this project
+# 4) Install this project with extras
 RUN pip install --no-cache-dir -U pip && \
-    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
-      torch torchaudio && \
+    if [ "$TORCH_VARIANT" = "cpu" ]; then \
+      pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchaudio ; \
+    else \
+      pip install --no-cache-dir --index-url https://download.pytorch.org/whl/${TORCH_VARIANT} torch torchaudio ; \
+    fi && \
     pip install --no-cache-dir demucs && \
-    pip install --no-cache-dir .
+    pip install --no-cache-dir ".[${INSTALL_EXTRAS}]"
 
 # --- Runtime env defaults ---
 ENV SUBGEN_DATA_ROOT=/data

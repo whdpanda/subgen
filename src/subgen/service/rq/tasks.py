@@ -89,11 +89,31 @@ def _loop_cfg_from_env() -> LoopConfig:
     return cfg
 
 
-def _cpu_safe_pipeline_defaults(pipeline_args: Dict[str, Any]) -> Dict[str, Any]:
+def _pipeline_defaults_from_env(pipeline_args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Job-safe defaults WITHOUT forcing CPU.
+    - Default to auto device selection for ASR (cuda if available, else cpu).
+    - Allow env overrides so K8s can force GPU+float16 deterministically.
+
+    Env knobs:
+      SUBGEN_ASR_DEVICE=cuda|cpu|auto
+      SUBGEN_ASR_COMPUTE_TYPE=float16|int8|...
+      SUBGEN_TRANSLATOR_DEVICE=cuda|cpu
+      SUBGEN_DEMUCS_DEVICE=cuda|cpu
+    """
     out = dict(pipeline_args or {})
-    out.setdefault("asr_device", "cpu")
-    out.setdefault("translator_device", "cpu")
-    out.setdefault("demucs_device", "cpu")
+
+    # ASR device/compute_type
+    out.setdefault("asr_device", os.getenv("SUBGEN_ASR_DEVICE", "auto"))
+    # Keep None so LocalWhisperASR derives cuda->float16, cpu->int8
+    if "asr_compute_type" not in out:
+        v = os.getenv("SUBGEN_ASR_COMPUTE_TYPE")
+        out["asr_compute_type"] = v if v else None
+
+    # Translator/Demucs device: keep your old behavior unless you want to override via env
+    out.setdefault("translator_device", os.getenv("SUBGEN_TRANSLATOR_DEVICE", out.get("translator_device", "cuda")))
+    out.setdefault("demucs_device", os.getenv("SUBGEN_DEMUCS_DEVICE", out.get("demucs_device", "cpu")))
+
     return out
 
 
@@ -217,7 +237,8 @@ def _run_generate(spec: JobSpec, job_dir: str) -> Dict[str, Any]:
     quality_args = inputs.get("quality_args")
     fix_args = inputs.get("fix_args")
 
-    pipeline_args = _cpu_safe_pipeline_defaults(dict(pipeline_args))
+    # IMPORTANT: do NOT force cpu defaults; use env/auto defaults
+    pipeline_args = _pipeline_defaults_from_env(dict(pipeline_args))
     pipeline_args.setdefault("job_id", spec.job_id)
 
     p_args: Dict[str, Any] = {"video_path": video_path, "out_dir": out_dir}
@@ -326,7 +347,6 @@ def run_job(job_id: str) -> Dict[str, Any]:
     RQ task entrypoint:
       "subgen.service.rq.tasks.run_job"
     """
-    # Correlate all worker logs by job_id
     set_trace_id(job_id)
 
     cfg = load_config()
