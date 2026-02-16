@@ -178,27 +178,28 @@ jobid:
 	@echo
 	@echo "==== Extract job_id ===="
 	test -f .tmp/resp.json || (echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1)
-	python -c "import json; d=json.load(open('.tmp/resp.json','r',encoding='utf-8')); print(d.get('job_id') or d.get('id') or '')"
+	python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")'
 
 watch:
 	@echo
 	@echo "==== Poll /v1/jobs/<job_id> ===="
-	test -f .tmp/resp.json || (echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1)
-	JOB_ID="$$(python -c "import json; d=json.load(open('.tmp/resp.json','r',encoding='utf-8')); print(d.get('job_id') or d.get('id') or '')")"
-	test -n "$$JOB_ID" || (echo "job_id not found in .tmp/resp.json"; exit 1)
-	echo "job_id=$$JOB_ID"
-	for i in $$(seq 1 120); do
-	resp="$$(curl -fsS "{{BASE_URL}}/v1/jobs/$$JOB_ID")"
-	echo "$$resp"
-	state="$$(echo "$$resp" | python -c "import json, sys; data=json.load(sys.stdin); print((data.get('state') or data.get('status') or ''))")"
-	if [[ "$$state" == "succeeded" || "$$state" == "failed" ]]; then
-	echo "terminal state=$$state"
-	echo "$$JOB_ID" > .tmp/job_id.txt
-	exit 0
-	fi
-	sleep 2
-	done
-	echo "Timeout waiting job"
+	@test -f .tmp/resp.json || (echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1)
+
+	@JOB_ID="$(python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")')" ; \
+	test -n "$JOB_ID" || (echo "job_id not found in .tmp/resp.json"; exit 1) ; \
+	echo "job_id=$JOB_ID" ; \
+	for i in $(seq 1 120); do \
+	resp="$(curl -fsS "{{BASE_URL}}/v1/jobs/$JOB_ID")" ; \
+	echo "$resp" ; \
+	state="$(echo "$resp" | python -c 'import json,sys; data=json.load(sys.stdin); print(data.get("state") or data.get("status") or "")')" ; \
+	if [[ "$state" == "succeeded" || "$state" == "failed" ]]; then \
+	echo "terminal state=$state" ; \
+	echo "$JOB_ID" > .tmp/job_id.txt ; \
+	exit 0 ; \
+	fi ; \
+	sleep 2 ; \
+	done ; \
+	echo "Timeout waiting job" ; \
 	exit 1
 
 result:
