@@ -59,14 +59,13 @@ def generate(req: GenerateRequest) -> JobStatus:
         inputs["fix_args"] = fix_args
 
     js = get_jobs_service()
-    st = js.create_job(
+    r = js.create_and_enqueue(
         kind=JobKind.SUBTITLES_GENERATE,
         inputs=inputs,
         options={},
         meta={"api": "subtitles.generate"},
     )
-    st = js.enqueue_job(st.job_id)
-    return st
+    return r.status
 
 
 @router.post(
@@ -99,14 +98,13 @@ def fix(req: FixRequest) -> JobStatus:
         inputs["quality_args"] = quality_args
 
     js = get_jobs_service()
-    st = js.create_job(
+    r = js.create_and_enqueue(
         kind=JobKind.SUBTITLES_FIX,
         inputs=inputs,
         options={},
         meta={"api": "subtitles.fix"},
     )
-    st = js.enqueue_job(st.job_id)
-    return st
+    return r.status
 
 
 @router.post(
@@ -152,11 +150,10 @@ def burn(req: BurnRequest) -> JobStatus:
         inputs["burn_args"] = burn_args
 
     js = get_jobs_service()
-    st = js.create_job(
+    r = js.create_and_enqueue(
         kind=JobKind.SUBTITLES_BURN,
         inputs=inputs,
         options={},
         meta={"api": "subtitles.burn"},
     )
-    st = js.enqueue_job(st.job_id)
-    return st
+    return r.status
