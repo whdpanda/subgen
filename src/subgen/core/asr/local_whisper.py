@@ -35,6 +35,25 @@ def _cuda_available() -> bool:
         return False
 
 
+def _cuda_unavailable_reason() -> str:
+    """Best-effort diagnostics to explain why CUDA cannot be used."""
+    try:
+        import torch  # optional
+    except Exception as e:
+        return f"torch import failed: {e}"
+
+    try:
+        if torch.cuda.is_available():
+            return "cuda is available"
+        return (
+            "torch.cuda.is_available()=False "
+            f"(torch={getattr(torch, '__version__', 'unknown')}, "
+            f"torch.version.cuda={getattr(getattr(torch, 'version', None), 'cuda', None)})"
+        )
+    except Exception as e:
+        return f"cuda probe failed: {e}"
+
+
 def _is_cuda_device(device: str) -> bool:
     d = (device or "").lower()
     return d == "cuda" or d.startswith("cuda:")
@@ -282,7 +301,15 @@ class LocalWhisperASR(ASRProvider):
         vad_filter: bool = False,
     ):
         self.model_name = model_name
-        self.device = _auto_device() if device == "auto" else device
+        requested_device = device
+        self.device = _auto_device() if requested_device == "auto" else requested_device
+
+        if requested_device == "auto" and not _is_cuda_device(self.device):
+            logger.warning(
+                "ASR device auto-resolved to CPU. To use GPU, run with NVIDIA GPU exposed "
+                "(Docker: --gpus all / K8s: nvidia.com/gpu) and CUDA-enabled torch. "
+                f"Detail: {_cuda_unavailable_reason()}"
+            )
 
         # Derive compute_type if not given.
         if compute_type is None:
@@ -299,7 +326,8 @@ class LocalWhisperASR(ASRProvider):
         if _is_cuda_device(self.device) and not _cuda_available():
             raise ValueError(
                 f"device={self.device} requested but CUDA is not available in this runtime. "
-                f"Fix: use a CUDA-enabled torch build + expose GPU to container/pod."
+                f"Fix: use a CUDA-enabled torch build + expose GPU to container/pod. "
+                f"Detail: {_cuda_unavailable_reason()}"
             )
 
         self.compute_type = compute_type
