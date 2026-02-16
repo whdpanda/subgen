@@ -108,3 +108,37 @@ def test_run_subgen_pipeline_tool_schema(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert isinstance(out["outputs"], dict)
     assert isinstance(out["artifacts"], dict)
     assert isinstance(out["meta"], dict)
+
+
+def test_run_subgen_pipeline_tool_asr_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """
+    Ensure tool-level defaults stay aligned with PipelineConfig/worker defaults:
+    - asr_device defaults to "auto"
+    - asr_compute_type defaults to None so runtime derives cuda->float16 / cpu->int8
+    """
+    import subgen.agent.tools.run_subgen_pipeline_tool as pt
+
+    seen_cfg: dict[str, Any] = {}
+
+    class _FakeRes:
+        def __init__(self, out_dir: Path) -> None:
+            self.primary_path = out_dir / "video_with_subs.mp4"
+            self.srt_paths = []
+            self.outputs = {}
+            self.artifacts = {}
+            self.meta = {}
+
+    def _fake_run_pipeline(cfg: Any) -> Any:
+        seen_cfg["asr_device"] = getattr(cfg, "asr_device", None)
+        seen_cfg["asr_compute_type"] = getattr(cfg, "asr_compute_type", "__missing__")
+        out_dir = tmp_path / "out2"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return _FakeRes(out_dir)
+
+    monkeypatch.setattr(pt, "run_pipeline", _fake_run_pipeline, raising=True)
+
+    out = pt.run_subgen_pipeline_tool(video_path=str(tmp_path / "dummy2.mp4"))
+
+    assert out["ok"] is True
+    assert seen_cfg["asr_device"] == "auto"
+    assert seen_cfg["asr_compute_type"] is None
