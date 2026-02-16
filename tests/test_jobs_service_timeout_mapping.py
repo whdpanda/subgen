@@ -60,7 +60,7 @@ def test_timeout_moved_from_pipeline_args_to_rq_job_timeout(tmp_path: Any) -> No
     )
 
     enq = queue.enqueues[0]
-    assert enq["kwargs"]["timeout"] == 120
+    assert enq["kwargs"]["job_timeout"] == 120
 
     spec = store.read_spec_dict(job_id)
     assert spec["inputs"]["pipeline_args"] == {"foo": "bar"}
@@ -85,7 +85,7 @@ def test_invalid_pipeline_timeout_uses_default_rq_timeout(tmp_path: Any) -> None
     )
 
     enq = queue.enqueues[0]
-    assert enq["kwargs"]["timeout"] == 5400
+    assert enq["kwargs"]["job_timeout"] == 5400
 
     spec = store.read_spec_dict(job_id)
     assert spec["inputs"]["pipeline_args"] == {"foo": "bar"}

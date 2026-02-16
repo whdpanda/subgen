@@ -183,7 +183,7 @@ class JobsService:
             "subgen.service.rq.tasks.run_job",
             jid,
             job_id=jid,
-            timeout=rq_job_timeout,
+            job_timeout=rq_job_timeout,
             result_ttl=24 * 3600,
             failure_ttl=24 * 3600,
         )
