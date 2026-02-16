@@ -120,8 +120,11 @@ class PipelineToolArgs(BaseModel):
 
     # ASR
     asr_model: str = Field("large-v3", description="ASR model name")
-    asr_device: str = Field("cuda", description="cuda/cpu/auto")
-    asr_compute_type: Optional[str] = Field("float16", description="float16/int8/...")
+    asr_device: str = Field("auto", description="cuda/cpu/auto (default: auto-select)")
+    asr_compute_type: Optional[str] = Field(
+        None,
+        description="ASR compute type; None => cuda->float16, cpu->int8",
+    )
     asr_beam_size: int = Field(5, description="beam size")
     asr_best_of: int = Field(5, description="best_of")
     asr_vad_filter: bool = Field(True, description="Enable VAD filter")
