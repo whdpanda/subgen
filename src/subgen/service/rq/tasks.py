@@ -105,10 +105,26 @@ def _pipeline_defaults_from_env(pipeline_args: Dict[str, Any]) -> Dict[str, Any]
 
     # ASR device/compute_type
     out.setdefault("asr_device", os.getenv("SUBGEN_ASR_DEVICE", "auto"))
+    if isinstance(out.get("asr_device"), str):
+        out["asr_device"] = out["asr_device"].strip().lower() or "auto"
+
     # Keep None so LocalWhisperASR derives cuda->float16, cpu->int8
     if "asr_compute_type" not in out:
         v = os.getenv("SUBGEN_ASR_COMPUTE_TYPE")
         out["asr_compute_type"] = v if v else None
+    if isinstance(out.get("asr_compute_type"), str):
+        ct = out["asr_compute_type"].strip().lower()
+        if ct == "fp16":
+            ct = "float16"
+        out["asr_compute_type"] = ct or None
+
+    # Hard guardrail for env/config overrides before ASR init.
+    if out.get("asr_device") == "cpu" and out.get("asr_compute_type") in ("float16", "fp16"):
+        logger.warning(
+            "ASR override requests device=cpu with compute_type=%s; forcing compute_type=int8.",
+            out.get("asr_compute_type"),
+        )
+        out["asr_compute_type"] = "int8"
 
     # Translator/Demucs device: keep your old behavior unless you want to override via env
     out.setdefault("translator_device", os.getenv("SUBGEN_TRANSLATOR_DEVICE", out.get("translator_device", "cuda")))

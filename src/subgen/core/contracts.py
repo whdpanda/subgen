@@ -92,6 +92,27 @@ class PipelineConfig:
     use_cache: bool = True
     dump_intermediates: bool = True
 
+    def __post_init__(self) -> None:
+        # Normalize ASR runtime knobs once at config boundary so all call paths
+        # (API/tool/worker) behave consistently.
+        device = (self.asr_device or "auto").strip().lower()
+        if not device:
+            device = "auto"
+
+        compute_type = self.asr_compute_type
+        if isinstance(compute_type, str):
+            compute_type = compute_type.strip().lower()
+            if compute_type == "fp16":
+                compute_type = "float16"
+            if not compute_type:
+                compute_type = None
+
+        if device == "cpu" and compute_type in ("float16", "fp16"):
+            compute_type = "int8"
+
+        object.__setattr__(self, "asr_device", device)
+        object.__setattr__(self, "asr_compute_type", compute_type)
+
 
 @dataclass(frozen=True)
 class PipelineResult:

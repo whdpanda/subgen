@@ -79,3 +79,19 @@ def test_run_job_generate_happy_path(tmp_path: Path, monkeypatch: Any) -> None:
     res = store.read_result_dict(job_id)
     assert res["ok"] is True
     assert res["job_id"] == job_id
+
+def test_pipeline_defaults_force_int8_for_cpu_fp16(monkeypatch: Any) -> None:
+    monkeypatch.setenv("SUBGEN_ASR_DEVICE", " CPU ")
+    monkeypatch.setenv("SUBGEN_ASR_COMPUTE_TYPE", " FP16 ")
+
+    out = tasks_mod._pipeline_defaults_from_env({})
+
+    assert out["asr_device"] == "cpu"
+    assert out["asr_compute_type"] == "int8"
+
+
+def test_pipeline_defaults_normalize_explicit_values() -> None:
+    out = tasks_mod._pipeline_defaults_from_env({"asr_device": " CuDa:0 ", "asr_compute_type": " fp16 "})
+
+    assert out["asr_device"] == "cuda:0"
+    assert out["asr_compute_type"] == "float16"
