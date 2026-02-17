@@ -193,53 +193,79 @@ jobid:
 	@echo
 	@echo "==== Extract job_id ===="
 	@test -f .tmp/resp.json || (echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1)
-	@python -c "import json; d=json.load(open('.tmp/resp.json','r',encoding='utf-8')); print(d.get('job_id') or d.get('id') or '')"
+	@python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")'
 
 watch:
-	@echo
-	@echo "==== Poll /v1/jobs/<job_id> ===="
-	@test -f .tmp/resp.json || (echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1)
+	#!/usr/bin/env bash
+	set -euo pipefail
 
-	@JOB_ID="$(python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")')" ; \
-	test -n "$JOB_ID" || (echo "job_id not found in .tmp/resp.json"; exit 1) ; \
-	echo "job_id=$JOB_ID" ; \
-	echo "$JOB_ID" > .tmp/job_id.txt ; \
-	max_iter="$$(python -c 'import math; print(max(1, int(int("{{WATCH_TIMEOUT_SEC}}")/int("{{WATCH_INTERVAL_SEC}}"))))')" ; \
-	for i in $$(seq 1 "$$max_iter"); do \
-	resp="$$(curl -fsS "{{BASE_URL}}/v1/jobs/$$JOB_ID")" ; \
-	echo "$$resp" ; \
-	state="$$(echo "$$resp" | python -c 'import json,sys; data=json.load(sys.stdin); print(data.get("state") or data.get("status") or "")')" ; \
-	if [[ "$$state" == "succeeded" || "$$state" == "failed" ]]; then \
-	echo "terminal state=$$state" ; \
-	exit 0 ; \
-	fi ; \
-	sleep "{{WATCH_INTERVAL_SEC}}" ; \
-	done ; \
-	echo "Timeout waiting job (state not terminal yet). You can rerun: just watch" ; \
+	echo
+	echo "==== Poll /v1/jobs/<job_id> ===="
+	test -f .tmp/resp.json || { echo "Missing .tmp/resp.json. Run: just gen-save"; exit 1; }
+
+	JOB_ID="$(python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")')"
+	test -n "$JOB_ID" || { echo "job_id not found in .tmp/resp.json"; exit 1; }
+
+	echo "job_id=$JOB_ID"
+	echo "$JOB_ID" > .tmp/job_id.txt
+
+	max_iter=$(( ({{WATCH_TIMEOUT_SEC}} + {{WATCH_INTERVAL_SEC}} - 1) / {{WATCH_INTERVAL_SEC}} ))
+
+	for i in $(seq 1 "$max_iter"); do
+	resp="$(curl -fsS "{{BASE_URL}}/v1/jobs/$JOB_ID")"
+	echo "$resp"
+
+	state="$(echo "$resp" | python -c 'import json,sys; data=json.load(sys.stdin); print(data.get("state") or data.get("status") or "")')"
+
+	if [[ "$state" == "succeeded" || "$state" == "failed" ]]; then
+	echo "terminal state=$state"
+	exit 0
+	fi
+
+	sleep "{{WATCH_INTERVAL_SEC}}"
+	done
+
+	echo "Timeout waiting job (state not terminal yet). You can rerun: just watch"
 	exit 0
 
+
 result:
-	@echo
-	@echo "==== GET /v1/jobs/<job_id>/result ===="
-	@test -f .tmp/job_id.txt || (echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1)
-	@JOB_ID="$$(cat .tmp/job_id.txt)" ; \
-	curl -fsS "{{BASE_URL}}/v1/jobs/$$JOB_ID/result" ; echo
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	echo
+	echo "==== GET /v1/jobs/<job_id>/result ===="
+	test -f .tmp/job_id.txt || { echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1; }
+
+	JOB_ID="$(cat .tmp/job_id.txt)"
+	curl -fsS "{{BASE_URL}}/v1/jobs/$JOB_ID/result"
+	echo
+
 
 jobfiles:
-	@echo
-	@echo "==== Show job files on host ===="
-	@test -f .tmp/job_id.txt || (echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1)
-	@JOB_ID="$$(cat .tmp/job_id.txt)" ; \
-	echo "Host path: {{JOB_DIR}}/$$JOB_ID" ; \
-	ls -lah "{{JOB_DIR}}/$$JOB_ID" || true ; \
-	echo "---- spec.json ----" ; \
-	test -f "{{JOB_DIR}}/$$JOB_ID/spec.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/spec.json" || true ; \
-	echo "---- status.json ---" ; \
-	test -f "{{JOB_DIR}}/$$JOB_ID/status.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/status.json" || true ; \
-	echo "---- result.json ---" ; \
-	test -f "{{JOB_DIR}}/$$JOB_ID/result.json" && sed -n '1,200p' "{{JOB_DIR}}/$$JOB_ID/result.json" || true ; \
-	echo "---- debug.log ----" ; \
-	test -f "{{JOB_DIR}}/$$JOB_ID/debug.log" && tail -n 200 "{{JOB_DIR}}/$$JOB_ID/debug.log" || true
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	echo
+	echo "==== Show job files on host ===="
+	test -f .tmp/job_id.txt || { echo "Missing .tmp/job_id.txt. Run: just watch"; exit 1; }
+
+	JOB_ID="$(cat .tmp/job_id.txt)"
+	echo "Host path: {{JOB_DIR}}/$JOB_ID"
+
+	ls -lah "{{JOB_DIR}}/$JOB_ID" || true
+
+	echo "---- spec.json ----"
+	test -f "{{JOB_DIR}}/$JOB_ID/spec.json" && sed -n '1,200p' "{{JOB_DIR}}/$JOB_ID/spec.json" || true
+
+	echo "---- status.json ---"
+	test -f "{{JOB_DIR}}/$JOB_ID/status.json" && sed -n '1,200p' "{{JOB_DIR}}/$JOB_ID/status.json" || true
+
+	echo "---- result.json ---"
+	test -f "{{JOB_DIR}}/$JOB_ID/result.json" && sed -n '1,200p' "{{JOB_DIR}}/$JOB_ID/result.json" || true
+
+	echo "---- debug.log ----"
+	test -f "{{JOB_DIR}}/$JOB_ID/debug.log" && tail -n 200 "{{JOB_DIR}}/$JOB_ID/debug.log" || true
 
 metrics:
 	@echo
