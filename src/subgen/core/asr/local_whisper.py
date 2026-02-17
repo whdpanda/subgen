@@ -315,20 +315,26 @@ class LocalWhisperASR(ASRProvider):
         if compute_type is None:
             compute_type = "float16" if _is_cuda_device(self.device) else "int8"
 
-        # Guardrail:
-        # If user asks for float16, we MUST be on CUDA. Fail fast with a clear message.
+        # Guardrail / graceful degradation:
+        # If float16 is requested but CUDA is unavailable (or device resolves to CPU),
+        # fall back to CPU+int8 so the pipeline can keep running.
         ct = (compute_type or "").lower()
         if ct in ("float16", "fp16") and not _is_cuda_device(self.device):
-            raise ValueError(
+            logger.warning(
                 f"compute_type={compute_type} requires CUDA GPU, but device={self.device}. "
-                f"Fix: request GPU (K8s nvidia.com/gpu / Docker --gpus all) and set asr_device=cuda/auto."
+                "Falling back to device=cpu, compute_type=int8."
             )
+            self.device = "cpu"
+            compute_type = "int8"
+            ct = "int8"
         if _is_cuda_device(self.device) and not _cuda_available():
-            raise ValueError(
+            logger.warning(
                 f"device={self.device} requested but CUDA is not available in this runtime. "
-                f"Fix: use a CUDA-enabled torch build + expose GPU to container/pod. "
-                f"Detail: {_cuda_unavailable_reason()}"
+                f"Falling back to device=cpu, compute_type=int8. Detail: {_cuda_unavailable_reason()}"
             )
+            self.device = "cpu"
+            compute_type = "int8"
+            ct = "int8"
 
         self.compute_type = compute_type
         self.beam_size = beam_size
