@@ -301,7 +301,7 @@ class LocalWhisperASR(ASRProvider):
         vad_filter: bool = False,
     ):
         self.model_name = model_name
-        requested_device = device
+        requested_device = (device or "auto").strip().lower()
         self.device = _auto_device() if requested_device == "auto" else requested_device
 
         if requested_device == "auto" and not _is_cuda_device(self.device):
@@ -312,13 +312,21 @@ class LocalWhisperASR(ASRProvider):
             )
 
         # Derive compute_type if not given.
+        if isinstance(compute_type, str):
+            normalized = compute_type.strip().lower()
+            if normalized == "fp16":
+                normalized = "float16"
+            if normalized != compute_type:
+                logger.warning("Normalized ASR compute_type from %r to %r", compute_type, normalized)
+            compute_type = normalized
+
         if compute_type is None:
             compute_type = "float16" if _is_cuda_device(self.device) else "int8"
 
         # Guardrail / graceful degradation:
         # If float16 is requested but CUDA is unavailable (or device resolves to CPU),
         # fall back to CPU+int8 so the pipeline can keep running.
-        ct = (compute_type or "").lower()
+        ct = (compute_type or "").lower().strip()
         if ct in ("float16", "fp16") and not _is_cuda_device(self.device):
             logger.warning(
                 f"compute_type={compute_type} requires CUDA GPU, but device={self.device}. "
@@ -349,7 +357,20 @@ class LocalWhisperASR(ASRProvider):
         logger.info(
             f"Loading faster-whisper model={self.model_name}, device={self.device}, compute_type={self.compute_type}"
         )
-        self.model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+        try:
+            self.model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+        except Exception as e:
+            if _is_cuda_device(self.device):
+                logger.warning(
+                    "Failed to initialize faster-whisper on CUDA (%s). "
+                    "Retrying with device=cpu, compute_type=int8.",
+                    e,
+                )
+                self.device = "cpu"
+                self.compute_type = "int8"
+                self.model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+            else:
+                raise
 
     def _fw_transcribe(self, audio_path: Path, language: Optional[str]):
         segments_iter, info = self.model.transcribe(
