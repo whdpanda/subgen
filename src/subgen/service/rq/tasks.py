@@ -36,6 +36,7 @@ from subgen.api.schemas.jobs import (
 )
 from subgen.api.utils.logging_context import request_debug_logging
 from subgen.core.jobs import JobSpecStore
+from subgen.service.rq.worker_identity import build_worker_name
 from subgen.utils.logger import get_logger, set_trace_id, clear_trace_id
 
 logger = get_logger("subgen.worker")
@@ -368,7 +369,7 @@ def run_job(job_id: str) -> Dict[str, Any]:
     cfg = load_config()
     store = JobSpecStore(cfg.job_root)
 
-    worker_id = os.getenv("HOSTNAME") or os.getenv("COMPUTERNAME") or "worker"
+    worker_id = build_worker_name()
     try:
         _ = get_current_job()
     except Exception:
