@@ -5,15 +5,26 @@
 set shell := ["C:/Program Files/Git/bin/bash.exe", "-eu", "-o", "pipefail", "-c"]
 
 # ---- Config (override via: `just VAR=value target`) ----
-IMAGE        := "subgen:pr6"
+HOST         := "127.0.0.1"
+PORT         := "8000"
+BASE_URL     := "http://" + HOST + ":" + PORT
 
 REDIS_NAME   := "subgen-redis"
 API_NAME     := "subgen-api"
 WORKER_NAME  := "subgen-worker"
 
-HOST         := "127.0.0.1"
-PORT         := "8000"
-BASE_URL     := "http://" + HOST + ":" + PORT
+# ---- GPU toggle ----
+# Use: `just USE_GPU=true ...` (default true) or `just USE_GPU=false ...`
+USE_GPU := "true"
+GPU_ARGS := if USE_GPU == "true" { "--gpus all" } else { "" }
+
+# ---- Build args defaults ----
+# Extras: agent / rag / agent_rag / all
+INSTALL_EXTRAS := "agent_rag"
+TORCH_VARIANT  := if USE_GPU == "true" { "cu121" } else { "cpu" }
+
+# ---- Image tag ----
+IMAGE := if USE_GPU == "true" { "subgen:pr6-gpu" } else { "subgen:pr6-cpu" }
 
 # ---- Host paths (relative; created under repo) ----
 DATA_DIR     := "data"
@@ -31,6 +42,12 @@ TEST_VIDEO   := "universe.webm"
 VIDEO_PATH   := "/data/in/" + TEST_VIDEO
 OUT_PATH     := "/data/out"
 
+# ---- Burn config (host-relative) ----
+# You can override: just BURN_SRT=foo.srt burn-save
+BURN_SRT      := "universe.zh.fixed.srt"
+BURN_OUT_NAME := "universe.burned.mp4"
+BURN_OUT_PATH := "/data/out/" + BURN_OUT_NAME
+
 # Docker Desktop supports host.docker.internal
 REDIS_URL    := "redis://host.docker.internal:6379/0"
 
@@ -38,13 +55,7 @@ RQ_QUEUE     := "subgen"
 JOB_TIMEOUT  := "3600"
 REQ_ID       := "pr6-gen-001"
 
-# ---- GPU toggle (for float16 on CUDA) ----
-# Use: `just USE_GPU=true up` (default true) or `just USE_GPU=false up`
-USE_GPU := "true"
-GPU_ARGS := if USE_GPU == "true" { "--gpus all" } else { "" }
-
 # ---- Watch settings ----
-# Default: wait as long as JOB_TIMEOUT
 WATCH_TIMEOUT_SEC := JOB_TIMEOUT
 WATCH_INTERVAL_SEC := "2"
 
@@ -53,25 +64,34 @@ DOCKER_ENV   := "MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL=*"
 
 help:
 	@echo "PR6 acceptance targets:"
-	@echo "  just prep         # create data dirs"
-	@echo "  just up           # start redis + api + worker"
-	@echo "  just down         # stop & remove containers"
-	@echo "  just logs-api     # follow api logs"
-	@echo "  just logs-worker  # follow worker logs"
-	@echo "  just smoke        # hit /healthz /readyz /metrics"
-	@echo "  just gen          # POST /v1/subtitles/generate (prints response + HTTP code)"
-	@echo "  just gen-save     # same as gen but also writes .tmp/resp.json"
-	@echo "  just jobid        # prints job_id extracted from .tmp/resp.json"
-	@echo "  just watch        # poll /v1/jobs/<job_id> until terminal state (or timeout)"
-	@echo "  just result       # GET /v1/jobs/<job_id>/result"
-	@echo "  just jobfiles     # list spec/status/result/debug.log on host"
-	@echo "  just metrics      # fetch /metrics"
-	@echo "  just fail-path    # illegal path test"
-	@echo "  just fail-missing # missing input test"
+	@echo "  just prep           # create data dirs"
+	@echo "  just build          # docker build (uses USE_GPU/INSTALL_EXTRAS)"
+	@echo "  just rebuild        # docker build --no-cache"
+	@echo "  just verify-torch   # check torch/cuda in built image"
+	@echo "  just up             # start redis + api + worker"
+	@echo "  just down           # stop & remove containers"
+	@echo "  just logs-api       # follow api logs"
+	@echo "  just logs-worker    # follow worker logs"
+	@echo "  just smoke          # hit /healthz /readyz /metrics"
+	@echo "  just gen            # POST /v1/subtitles/generate"
+	@echo "  just gen-save       # POST -> .tmp/resp.json"
+	@echo "  just jobid          # extract job_id from .tmp/resp.json"
+	@echo "  just watch          # poll /v1/jobs/<job_id> until terminal"
+	@echo "  just result         # GET /v1/jobs/<job_id>/result"
+	@echo "  just jobfiles       # list spec/status/result/debug.log on host"
+	@echo "  just metrics        # fetch /metrics"
+	@echo "  just fail-path      # illegal path test"
+	@echo "  just fail-missing   # missing input test"
 	@echo
-	@echo "Override vars examples:"
-	@echo "  just IMAGE=subgen:pr6-gpu USE_GPU=true up"
-	@echo "  just WATCH_TIMEOUT_SEC=3600 watch"
+	@echo "Current build/runtime vars:"
+	@echo "  USE_GPU={{USE_GPU}}  TORCH_VARIANT={{TORCH_VARIANT}}  GPU_ARGS='{{GPU_ARGS}}'"
+	@echo "  INSTALL_EXTRAS={{INSTALL_EXTRAS}}"
+	@echo "  IMAGE={{IMAGE}}"
+	@echo
+	@echo "Examples:"
+	@echo "  just USE_GPU=true  build up"
+	@echo "  just USE_GPU=false build up"
+	@echo "  just INSTALL_EXTRAS=all USE_GPU=false rebuild up"
 
 prep:
 	@echo
@@ -81,6 +101,30 @@ prep:
 	@echo "Host DATA_DIR: {{justfile_directory()}}/{{DATA_DIR}}"
 	@echo "Docker mount DATA_MOUNT: {{DATA_MOUNT}}"
 	@echo "Put your test video at: {{justfile_directory()}}/{{IN_DIR}}/{{TEST_VIDEO}}"
+
+build:
+	@echo
+	@echo "==== Docker build ===="
+	@echo "IMAGE={{IMAGE}}  INSTALL_EXTRAS={{INSTALL_EXTRAS}}  TORCH_VARIANT={{TORCH_VARIANT}}"
+	{{DOCKER_ENV}} docker build -t "{{IMAGE}}" \
+	--build-arg INSTALL_EXTRAS="{{INSTALL_EXTRAS}}" \
+	--build-arg TORCH_VARIANT="{{TORCH_VARIANT}}" \
+	.
+
+rebuild:
+	@echo
+	@echo "==== Docker build --no-cache ===="
+	@echo "IMAGE={{IMAGE}}  INSTALL_EXTRAS={{INSTALL_EXTRAS}}  TORCH_VARIANT={{TORCH_VARIANT}}"
+	{{DOCKER_ENV}} docker build --no-cache -t "{{IMAGE}}" \
+	--build-arg INSTALL_EXTRAS="{{INSTALL_EXTRAS}}" \
+	--build-arg TORCH_VARIANT="{{TORCH_VARIANT}}" \
+	.
+
+verify-torch:
+	@echo
+	@echo "==== Verify torch/cuda inside image ===="
+	{{DOCKER_ENV}} docker run --rm {{GPU_ARGS}} "{{IMAGE}}" \
+	python -c "import torch; print('torch=', torch.__version__); print('cuda=', torch.version.cuda); print('is_available=', torch.cuda.is_available()); print('device_count=', torch.cuda.device_count())"
 
 up: redis api worker
 	@echo
@@ -111,6 +155,7 @@ api:
 	-{{DOCKER_ENV}} docker rm -f "{{API_NAME}}" >/dev/null 2>&1 || true
 	@echo "DATA_MOUNT={{DATA_MOUNT}}"
 	@echo "USE_GPU={{USE_GPU}}  GPU_ARGS={{GPU_ARGS}}"
+	@echo "IMAGE={{IMAGE}}"
 
 	# API 默认不需要 GPU；如果你的 API 里也会直接跑 pipeline，可把 {{GPU_ARGS}} 加进来。
 	{{DOCKER_ENV}} docker run -d --name "{{API_NAME}}" \
@@ -124,6 +169,7 @@ api:
 	-e SUBGEN_RQ_QUEUE_NAME="{{RQ_QUEUE}}" \
 	-e SUBGEN_RQ_JOB_TIMEOUT_SEC="{{JOB_TIMEOUT}}" \
 	-e SUBGEN_LOG_PATH=/data/logs/api.log \
+	-e OPENAI_API_KEY \
 	"{{IMAGE}}"
 
 	@echo "API started: {{API_NAME}}  ->  {{BASE_URL}}"
@@ -135,6 +181,7 @@ worker:
 	-{{DOCKER_ENV}} docker rm -f "{{WORKER_NAME}}" >/dev/null 2>&1 || true
 	@echo "DATA_MOUNT={{DATA_MOUNT}}"
 	@echo "USE_GPU={{USE_GPU}}  GPU_ARGS={{GPU_ARGS}}"
+	@echo "IMAGE={{IMAGE}}"
 
 	{{DOCKER_ENV}} docker run -d --name "{{WORKER_NAME}}" \
 	{{GPU_ARGS}} \
@@ -146,6 +193,7 @@ worker:
 	-e SUBGEN_REDIS_URL="{{REDIS_URL}}" \
 	-e SUBGEN_RQ_QUEUE_NAME="{{RQ_QUEUE}}" \
 	-e SUBGEN_RQ_JOB_TIMEOUT_SEC="{{JOB_TIMEOUT}}" \
+	-e OPENAI_API_KEY \
 	"{{IMAGE}}" \
 	python -m subgen.service.rq.worker_main
 
@@ -196,7 +244,7 @@ jobid:
 	@python -c 'import json; d=json.load(open(".tmp/resp.json","r",encoding="utf-8")); print(d.get("job_id") or d.get("id") or "")'
 
 watch:
-	#!/usr/bin/env bash
+	#!C:/Progra~1/Git/usr/bin/bash.exe
 	set -euo pipefail
 
 	echo
@@ -228,9 +276,8 @@ watch:
 	echo "Timeout waiting job (state not terminal yet). You can rerun: just watch"
 	exit 0
 
-
 result:
-	#!/usr/bin/env bash
+	#!C:/Progra~1/Git/usr/bin/bash.exe
 	set -euo pipefail
 
 	echo
@@ -241,9 +288,8 @@ result:
 	curl -fsS "{{BASE_URL}}/v1/jobs/$JOB_ID/result"
 	echo
 
-
 jobfiles:
-	#!/usr/bin/env bash
+	#!C:/Progra~1/Git/usr/bin/bash.exe
 	set -euo pipefail
 
 	echo
@@ -258,10 +304,10 @@ jobfiles:
 	echo "---- spec.json ----"
 	test -f "{{JOB_DIR}}/$JOB_ID/spec.json" && sed -n '1,200p' "{{JOB_DIR}}/$JOB_ID/spec.json" || true
 
-	echo "---- status.json ---"
+	echo "---- status.json ----"
 	test -f "{{JOB_DIR}}/$JOB_ID/status.json" && sed -n '1,200p' "{{JOB_DIR}}/$JOB_ID/status.json" || true
 
-	echo "---- result.json ---"
+	echo "---- result.json ----"
 	test -f "{{JOB_DIR}}/$JOB_ID/result.json" && sed -n '1,200p' "{{JOB_DIR}}/$JOB_ID/result.json" || true
 
 	echo "---- debug.log ----"
@@ -269,19 +315,23 @@ jobfiles:
 
 metrics:
 	@echo
-	@echo "==== GET /metrics ===="
-	curl -fsS "{{BASE_URL}}/metrics" | head -n 80 ; echo
+	@echo "==== /metrics (head) ===="
+	curl -fsS "{{BASE_URL}}/metrics" | head -n 50 ; echo
 
 fail-path:
 	@echo
-	@echo "==== Illegal path should be rejected ===="
-	curl -i -s -X POST "{{BASE_URL}}/v1/subtitles/generate" \
+	@echo "==== Illegal path test ===="
+	curl -fsS -X POST "{{BASE_URL}}/v1/subtitles/generate" \
 	-H "Content-Type: application/json" \
-	-d '{"video_path":"/etc/passwd","out_dir":"{{OUT_PATH}}"}' ; echo
+	-H "X-Request-Id: pr6-illegal-001" \
+	-d '{"video_path":"/etc/passwd","out_dir":"{{OUT_PATH}}"}' \
+	| tee .tmp/resp.json
+	@echo
+	@echo "Now: just watch && just result && just jobfiles"
 
 fail-missing:
 	@echo
-	@echo "==== Missing input should fail ===="
+	@echo "==== Missing input test ===="
 	curl -fsS -X POST "{{BASE_URL}}/v1/subtitles/generate" \
 	-H "Content-Type: application/json" \
 	-H "X-Request-Id: pr6-miss-001" \
@@ -289,3 +339,16 @@ fail-missing:
 	| tee .tmp/resp.json
 	@echo
 	@echo "Now: just watch && just result && just jobfiles"
+
+burn-save:
+	@echo
+	@echo "==== POST /v1/subtitles/burn -> .tmp/resp.json ===="
+	@echo "Using video: {{VIDEO_PATH}}"
+	@echo "Using srt  : /data/out/{{BURN_SRT}}"
+	@echo "Out video  : {{BURN_OUT_PATH}}"
+	curl -fsS -X POST "{{BASE_URL}}/v1/subtitles/burn" \
+	-H "Content-Type: application/json" \
+	-H "X-Request-Id: pr6-burn-001" \
+	-d '{"video_path":"{{VIDEO_PATH}}","srt_path":"/data/out/{{BURN_SRT}}","out_path":"{{BURN_OUT_PATH}}"}' \
+	| tee .tmp/resp.json
+	@echo
