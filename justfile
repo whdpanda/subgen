@@ -55,6 +55,12 @@ RQ_QUEUE     := "subgen"
 JOB_TIMEOUT  := "3600"
 REQ_ID       := "pr6-gen-001"
 
+# ---- Optional preprocess knobs (sent under pipeline_args) ----
+# Default key is "preprocess". Override when API expects a different field,
+# e.g. `just PREPROCESS_KEY=audio_preprocess PREPROCESS=demucs gen-save`.
+PREPROCESS     := "none"
+PREPROCESS_KEY := "preprocess"
+
 # ---- Watch settings ----
 WATCH_TIMEOUT_SEC := JOB_TIMEOUT
 WATCH_INTERVAL_SEC := "2"
@@ -87,6 +93,7 @@ help:
 	@echo "  USE_GPU={{USE_GPU}}  TORCH_VARIANT={{TORCH_VARIANT}}  GPU_ARGS='{{GPU_ARGS}}'"
 	@echo "  INSTALL_EXTRAS={{INSTALL_EXTRAS}}"
 	@echo "  IMAGE={{IMAGE}}"
+	@echo "  PREPROCESS={{PREPROCESS}}  PREPROCESS_KEY={{PREPROCESS_KEY}}"
 	@echo
 	@echo "Examples:"
 	@echo "  just USE_GPU=true  build up"
@@ -220,20 +227,22 @@ smoke:
 gen:
 	@echo
 	@echo "==== POST /v1/subtitles/generate ===="
+	PAYLOAD="$$(python -c 'import json; print(json.dumps({"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}","pipeline_args":{"{{PREPROCESS_KEY}}":"{{PREPROCESS}"}}))')"; \
 	curl -fsS -X POST "{{BASE_URL}}/v1/subtitles/generate" \
 	-H "Content-Type: application/json" \
 	-H "X-Request-Id: {{REQ_ID}}" \
-	-d '{"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}"}' \
+	-d "$$PAYLOAD" \
 	-w '\nHTTP=%{http_code}\n'
 	@echo
 
 gen-save:
 	@echo
 	@echo "==== POST /v1/subtitles/generate -> .tmp/resp.json ===="
+	PAYLOAD="$$(python -c 'import json; print(json.dumps({"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}","pipeline_args":{"{{PREPROCESS_KEY}}":"{{PREPROCESS}"}}))')"; \
 	curl -fsS -X POST "{{BASE_URL}}/v1/subtitles/generate" \
 	-H "Content-Type: application/json" \
 	-H "X-Request-Id: {{REQ_ID}}" \
-	-d '{"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}"}' \
+	-d "$$PAYLOAD" \
 	| tee .tmp/resp.json
 	@echo
 
