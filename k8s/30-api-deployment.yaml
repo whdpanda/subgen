@@ -16,7 +16,7 @@ spec:
       containers:
         - name: api
           # 同一个镜像：通过 command/args 区分 api/worker
-          image: subgen:latest
+          image: subgen:pr6-gpu
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

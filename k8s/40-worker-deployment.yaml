@@ -35,7 +35,7 @@ spec:
       containers:
         - name: worker
           # 建议这里用你构建的 GPU 镜像 tag（例如 subgen:pr6-gpu 或你推到 registry 的版本）
-          image: subgen:latest
+          image: subgen:pr6-gpu
           imagePullPolicy: IfNotPresent
 
           envFrom:
