@@ -38,6 +38,16 @@ spec:
           image: subgen:latest
           imagePullPolicy: IfNotPresent
 
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+
           envFrom:
             - configMapRef:
                 name: subgen-config
