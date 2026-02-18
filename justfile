@@ -55,10 +55,13 @@ RQ_QUEUE     := "subgen"
 JOB_TIMEOUT  := "3600"
 REQ_ID       := "pr6-gen-001"
 
-# ---- Optional preprocess knobs (sent under pipeline_args) ----
-# Default key is "preprocess". Override when API expects a different field,
-# e.g. `just PREPROCESS_KEY=audio_preprocess PREPROCESS=demucs gen-save`.
-PREPROCESS     := "none"
+# ---- Audio preprocess ----
+# Set PREPROCESS="demucs" to enable demucs; set to "" or "none" to disable.
+PREPROCESS := "demucs"
+
+# IMPORTANT: The request field name depends on your FastAPI schema.
+# Common candidates: "preprocess" or "audio_preprocess".
+# If demucs still doesn't run, change this to "audio_preprocess".
 PREPROCESS_KEY := "preprocess"
 
 # ---- Watch settings ----
@@ -93,7 +96,6 @@ help:
 	@echo "  USE_GPU={{USE_GPU}}  TORCH_VARIANT={{TORCH_VARIANT}}  GPU_ARGS='{{GPU_ARGS}}'"
 	@echo "  INSTALL_EXTRAS={{INSTALL_EXTRAS}}"
 	@echo "  IMAGE={{IMAGE}}"
-	@echo "  PREPROCESS={{PREPROCESS}}  PREPROCESS_KEY={{PREPROCESS_KEY}}"
 	@echo
 	@echo "Examples:"
 	@echo "  just USE_GPU=true  build up"
@@ -227,22 +229,28 @@ smoke:
 gen:
 	@echo
 	@echo "==== POST /v1/subtitles/generate ===="
-	PAYLOAD="$$(python -c 'import json; print(json.dumps({"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}","pipeline_args":{"{{PREPROCESS_KEY}}":"{{PREPROCESS}"}}))')"; \
+	@echo "PREPROCESS={{PREPROCESS}}  PREPROCESS_KEY={{PREPROCESS_KEY}}"
+	@mkdir -p .tmp
+	@PYTHON_BASIC_REPL=1 python -c $'import json\npre="{{PREPROCESS}}".strip()\nkey="{{PREPROCESS_KEY}}".strip() or "audio_preprocess"\nd={"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}"}\nif pre and pre.lower() not in ("none","off","false","0"):\n    pa={key: pre}\n    # 兼容不同 schema：两种键都带上\n    pa.setdefault("audio_preprocess", pre)\n    pa.setdefault("preprocess", pre)\n    d["pipeline_args"]=pa\nprint(json.dumps(d, ensure_ascii=False))\n' > .tmp/payload.json
+	@echo "payload:" && cat .tmp/payload.json && echo
 	curl -fsS -X POST "{{BASE_URL}}/v1/subtitles/generate" \
 	-H "Content-Type: application/json" \
 	-H "X-Request-Id: {{REQ_ID}}" \
-	-d "$$PAYLOAD" \
+	-d @.tmp/payload.json \
 	-w '\nHTTP=%{http_code}\n'
 	@echo
 
 gen-save:
 	@echo
 	@echo "==== POST /v1/subtitles/generate -> .tmp/resp.json ===="
-	PAYLOAD="$$(python -c 'import json; print(json.dumps({"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}","pipeline_args":{"{{PREPROCESS_KEY}}":"{{PREPROCESS}"}}))')"; \
+	@echo "PREPROCESS={{PREPROCESS}}  PREPROCESS_KEY={{PREPROCESS_KEY}}"
+	@mkdir -p .tmp
+	@PYTHON_BASIC_REPL=1 python -c $'import json\npre="{{PREPROCESS}}".strip()\nkey="{{PREPROCESS_KEY}}".strip() or "audio_preprocess"\nd={"video_path":"{{VIDEO_PATH}}","out_dir":"{{OUT_PATH}}"}\nif pre and pre.lower() not in ("none","off","false","0"):\n    pa={key: pre}\n    # 兼容不同 schema：两种键都带上\n    pa.setdefault("audio_preprocess", pre)\n    pa.setdefault("preprocess", pre)\n    d["pipeline_args"]=pa\nprint(json.dumps(d, ensure_ascii=False))\n' > .tmp/payload.json
+	@echo "payload:" && cat .tmp/payload.json && echo
 	curl -fsS -X POST "{{BASE_URL}}/v1/subtitles/generate" \
 	-H "Content-Type: application/json" \
 	-H "X-Request-Id: {{REQ_ID}}" \
-	-d "$$PAYLOAD" \
+	-d @.tmp/payload.json \
 	| tee .tmp/resp.json
 	@echo
 
